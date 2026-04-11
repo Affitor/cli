@@ -3,6 +3,9 @@
 import { Command } from "commander";
 import pc from "picocolors";
 import { setLoggerOptions } from "./lib/logger.js";
+import { registerLoginCommand } from "./commands/login.js";
+import { registerLogoutCommand } from "./commands/logout.js";
+import { registerWhoamiCommand } from "./commands/whoami.js";
 import { registerInitCommand } from "./commands/init.js";
 import { registerSetupCommand } from "./commands/setup-stripe.js";
 import { registerStatusCommand } from "./commands/status.js";
@@ -51,6 +54,9 @@ program
     return lines.join("\n");
   });
 
+registerLoginCommand(program);
+registerLogoutCommand(program);
+registerWhoamiCommand(program);
 registerInitCommand(program);
 registerSetupCommand(program);
 registerStatusCommand(program);
