@@ -8,6 +8,20 @@ import type {
 import * as logger from "./logger.js";
 import { resolveApiKey } from "./config.js";
 
+export interface AuthStartResponse {
+  state: string;
+  auth_url: string;
+  poll_url: string;
+  expires_at: string;
+}
+
+export interface AuthPollResponse {
+  status: "pending" | "complete" | "expired" | "consumed";
+  token?: string;
+  email?: string;
+  advertiser_id?: number;
+}
+
 interface RequestOptions {
   method?: string;
   body?: Record<string, unknown>;
@@ -67,6 +81,22 @@ export class AffitorAPI {
       `/api/v1/cli/status?program_id=${programId}`,
     );
   }
+
+  // ─── Auth endpoints ───────────────────────────────────────────
+
+  async authStart(): Promise<AuthStartResponse> {
+    return this.request<AuthStartResponse>("/api/v1/cli/auth/start", {
+      method: "POST",
+    });
+  }
+
+  async authPoll(state: string): Promise<AuthPollResponse> {
+    return this.request<AuthPollResponse>(
+      `/api/v1/cli/auth/poll?state=${encodeURIComponent(state)}`,
+    );
+  }
+
+  // ─── Program endpoints ──────────────────────────────────────────
 
   async sendTestEvent(data: {
     program_id: string;
