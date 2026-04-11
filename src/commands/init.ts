@@ -5,6 +5,7 @@ import { AffitorAPI, APIError, NetworkError } from "../lib/api-client.js";
 import {
   configExists,
   writeConfig,
+  writeSecrets,
   writeEnvExample,
   writeSkillsFile,
   appendToGitignore,
@@ -164,8 +165,9 @@ async function runInit(
 
   logger.progressStep(1, totalSteps, "Program registered", true);
 
+  // Config v2: secrets go to .env, config.json has no secrets
   const config: AffitorConfig = {
-    version: 1,
+    version: 2,
     program_id: response.program_id,
     domain,
     tracking_subdomain: `t.${domain}`,
@@ -179,8 +181,6 @@ async function runInit(
       duration_days: cookieDuration,
     },
     ref_param: "aff",
-    stripe_connected: false,
-    api_key: response.api_key,
     api_url: apiUrl,
     created_at: new Date().toISOString(),
   };
@@ -188,10 +188,16 @@ async function runInit(
   writeConfig(config);
   logger.progressStep(2, totalSteps, "Config written to .affitor/config.json", true);
 
-  writeEnvExample(config);
-  logger.progressStep(3, totalSteps, "Env template + AGENTS.md created", true);
+  // Write secrets to .env (gitignored)
+  writeSecrets({
+    api_key: response.api_key,
+    program_id: response.program_id,
+  });
 
-  writeSkillsFile(config, name);
+  writeEnvExample(config, response.api_key);
+  writeSkillsFile(config, name, response.api_key);
+  logger.progressStep(3, totalSteps, "Secrets → .affitor/.env + AGENTS.md", true);
+
   appendToGitignore();
   logger.progressStep(4, totalSteps, "Gitignore updated", true);
 
@@ -220,7 +226,7 @@ async function runInit(
   logger.titledBox("Program Created", [
     "",
     `  Program ID:  ${format.bold(response.program_id)}`,
-    `  API Key:     ${format.dim(logger.maskApiKey(response.api_key))}`,
+    `  API Key:     ${format.dim(".affitor/.env (gitignored)")}`,
     `  Domain:      ${format.cyan(domain)}`,
     `  Commission:  ${format.green(formatCommission(commissionType, commissionRate, durationMonths))}`,
     "",
@@ -246,7 +252,7 @@ async function runInit(
     "",
   ]);
 
-  logger.info(`  ${format.dim("Files created:")} .affitor/config.json  ·  AGENTS.md  ·  .env.example`);
+  logger.info(`  ${format.dim("Files:")} .affitor/config.json  ·  .env  ·  AGENTS.md  ·  .env.example`);
   logger.info(`  ${format.dim("Docs:")} https://docs.affitor.com/advertisers/tracking`);
   logger.newline();
 }

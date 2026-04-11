@@ -6,6 +6,7 @@ import type {
   TestEventResult,
 } from "../types.js";
 import * as logger from "./logger.js";
+import { resolveApiKey } from "./config.js";
 
 interface RequestOptions {
   method?: string;
@@ -21,6 +22,18 @@ export class AffitorAPI {
   constructor(opts: { apiUrl?: string; apiKey?: string } = {}) {
     this.apiUrl = opts.apiUrl ?? DEFAULT_API_URL;
     this.apiKey = opts.apiKey;
+  }
+
+  /**
+   * Create an API client with auto-resolved credentials.
+   * Priority: --api-key flag > AFFITOR_API_KEY env > .affitor/.env > legacy config
+   */
+  static fromFlags(flags: { apiKey?: string; apiUrl?: string }, cwd?: string): AffitorAPI {
+    const apiKey = resolveApiKey(flags, cwd);
+    return new AffitorAPI({
+      apiUrl: flags.apiUrl ?? DEFAULT_API_URL,
+      apiKey: apiKey ?? undefined,
+    });
   }
 
   async initProgram(data: {
@@ -71,7 +84,7 @@ export class AffitorAPI {
 
     const headers: Record<string, string> = {
       "Content-Type": "application/json",
-      "User-Agent": "affitor-cli/0.1.0",
+      "User-Agent": "affitor-cli/0.2.0",
     };
     if (key) {
       headers["Authorization"] = `Bearer ${key}`;

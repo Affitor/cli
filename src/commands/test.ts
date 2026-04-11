@@ -43,10 +43,9 @@ async function runTest(eventType: string | undefined, flags: CLIFlags) {
     process.exit(1);
   }
 
-  const api = new AffitorAPI({
-    apiUrl: flags.apiUrl ?? config.api_url,
-    apiKey: flags.apiKey ?? config.api_key,
-  });
+  const api = AffitorAPI.fromFlags(
+    { apiKey: flags.apiKey, apiUrl: flags.apiUrl ?? config.api_url },
+  );
 
   logger.newline();
 

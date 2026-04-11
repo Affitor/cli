@@ -28,10 +28,9 @@ async function runStatus(flags: CLIFlags) {
     throw err;
   }
 
-  const api = new AffitorAPI({
-    apiUrl: flags.apiUrl ?? config.api_url,
-    apiKey: flags.apiKey ?? config.api_key,
-  });
+  const api = AffitorAPI.fromFlags(
+    { apiKey: flags.apiKey, apiUrl: flags.apiUrl ?? config.api_url },
+  );
 
   try {
     const status = await api.getStatus(config.program_id);
@@ -45,7 +44,6 @@ async function runStatus(flags: CLIFlags) {
     const dnsStatus = status.dns_verified
       ? format.green("Verified")
       : format.yellow("Not configured");
-    const dnsLabel = status.dns_verified ? "ok" : "warn";
 
     const stripeStatus = status.stripe_connected
       ? status.stripe_charges_enabled
@@ -69,7 +67,7 @@ async function runStatus(flags: CLIFlags) {
       `  ${format.dim("ID:")} ${status.program_id}`,
       "",
       `  ${format.bold("Integrations")}`,
-      `  DNS      ${dnsLabel === "ok" ? format.green("●") : format.yellow("●")} ${dnsStatus}`,
+      `  DNS      ${status.dns_verified ? format.green("●") : format.yellow("●")} ${dnsStatus}`,
       `  Stripe   ${stripeLabel === "ok" ? format.green("●") : stripeLabel === "warn" ? format.yellow("●") : format.red("●")} ${stripeStatus}`,
       "",
       `  ${format.bold("Events")} ${format.dim("(24h)")}`,

@@ -1,7 +1,7 @@
 import type { Command } from "commander";
 import * as logger from "../lib/logger.js";
 import { format } from "../lib/logger.js";
-import { readConfig, updateConfig, writeEnvExample, ConfigNotFoundError } from "../lib/config.js";
+import { readConfig, updateConfig, writeSecrets, readSecrets, ConfigNotFoundError } from "../lib/config.js";
 import { runStripeOAuth, StripeOAuthError } from "../lib/stripe-oauth.js";
 import { AffitorAPI, APIError, NetworkError } from "../lib/api-client.js";
 import { getFlags } from "../lib/flags.js";
@@ -48,14 +48,17 @@ async function runSetupStripe(
     throw err;
   }
 
-  if (config.stripe_connected) {
+  // Check if already connected via secrets or legacy config
+  const secrets = readSecrets();
+  if (secrets?.stripe_account_id || config.stripe_connected) {
+    const accountId = secrets?.stripe_account_id ?? config.stripe_account_id;
     logger.warn("Stripe is already connected.");
-    logger.info(`  Account: ${config.stripe_account_id}`);
+    logger.info(`  Account: ${accountId}`);
     logger.info("  To reconnect, disconnect first via the dashboard.");
     if (flags.json) {
       logger.json({
         status: "already_connected",
-        stripe_account_id: config.stripe_account_id,
+        stripe_account_id: accountId,
       });
     }
     process.exit(0);
@@ -107,11 +110,9 @@ async function runSetupStripe(
 
     logger.progressStep(1, totalSteps, "Stripe authorized", true);
 
-    // Save to Affitor API
-    const api = new AffitorAPI({
-      apiUrl: apiUrl,
-      apiKey: flags.apiKey ?? config.api_key,
-    });
+    const api = AffitorAPI.fromFlags(
+      { apiKey: flags.apiKey, apiUrl },
+    );
 
     const saveResult = await api.saveStripeConnection({
       program_id: config.program_id,
@@ -122,13 +123,21 @@ async function runSetupStripe(
 
     logger.progressStep(2, totalSteps, "Connection saved", true);
 
-    // Update local config
-    const updated = updateConfig({
+    // Update secrets with Stripe account ID
+    const currentSecrets = readSecrets();
+    if (currentSecrets) {
+      writeSecrets({
+        ...currentSecrets,
+        stripe_account_id: result.stripe_user_id,
+      });
+    }
+
+    // Update config (for backward compat)
+    updateConfig({
       stripe_connected: true,
       stripe_account_id: result.stripe_user_id,
     });
 
-    writeEnvExample(updated);
     logger.progressStep(3, totalSteps, "Config updated", true);
 
     if (flags.json) {
