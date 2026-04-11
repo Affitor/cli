@@ -1,0 +1,54 @@
+{
+  "name": "affitor",
+  "version": "0.2.0",
+  "description": "CLI-native affiliate tracking. Connect Stripe, track commissions, manage partners — all from your terminal.",
+  "type": "module",
+  "bin": {
+    "affitor": "./dist/cli.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "start": "node dist/cli.js",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "lint": "tsc --noEmit",
+    "prepublishOnly": "npm run build"
+  },
+  "keywords": [
+    "affiliate",
+    "tracking",
+    "stripe",
+    "cli",
+    "affiliate-marketing",
+    "commission",
+    "partner",
+    "agent",
+    "ai"
+  ],
+  "author": "Affitor <hello@affitor.com>",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Affitor/affiliate-cli"
+  },
+  "homepage": "https://affitor.com",
+  "engines": {
+    "node": ">=18"
+  },
+  "files": [
+    "dist"
+  ],
+  "dependencies": {
+    "commander": "^13.1.0",
+    "@inquirer/prompts": "^7.5.0",
+    "picocolors": "^1.1.1",
+    "open": "^10.1.0",
+    "stripe": "^17.7.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.0",
+    "vitest": "^3.1.0",
+    "@types/node": "^22.0.0"
+  }
+}
