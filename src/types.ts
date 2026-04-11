@@ -82,6 +82,16 @@ export interface ProgramStatus {
   pending_commissions: number;
 }
 
+export interface ProgramSummary {
+  id: number;
+  name: string;
+  domain: string;
+  status: string;
+  commission: string;
+  partners: number;
+  created_at: string;
+}
+
 export interface TestEventResult {
   event_type: "click" | "lead" | "sale";
   event_id: string;

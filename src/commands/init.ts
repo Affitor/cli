@@ -22,6 +22,8 @@ import {
 import type { AffitorConfig, CLIFlags, CommissionType } from "../types.js";
 import { DEFAULT_API_URL } from "../types.js";
 import { getFlags } from "../lib/flags.js";
+import { readCredentials } from "../lib/config.js";
+import pc from "picocolors";
 
 export function registerInitCommand(program: Command) {
   program
@@ -52,6 +54,19 @@ async function runInit(
   },
   flags: CLIFlags,
 ) {
+  // Require login
+  const creds = readCredentials();
+  if (!creds) {
+    logger.error("You must be logged in to create a program.");
+    logger.info("");
+    logger.info(`  Run ${pc.cyan("affitor login")} first.`);
+    logger.info("");
+    if (flags.json) {
+      logger.json({ error: "not_logged_in" });
+    }
+    process.exit(1);
+  }
+
   if (configExists()) {
     logger.error(
       "Affitor already configured in this directory.\n" +
@@ -133,7 +148,7 @@ async function runInit(
   }
 
   const apiUrl = flags.apiUrl ?? DEFAULT_API_URL;
-  const api = new AffitorAPI({ apiUrl });
+  const api = new AffitorAPI({ apiUrl, apiKey: creds.token });
 
   const totalSteps = 4;
 
@@ -148,6 +163,7 @@ async function runInit(
       commission_rate: commissionRate,
       cookie_duration: cookieDuration,
       duration_months: durationMonths,
+      advertiser_id: creds.advertiser_id ? parseInt(creds.advertiser_id, 10) : undefined,
     });
   } catch (err) {
     if (err instanceof APIError) {

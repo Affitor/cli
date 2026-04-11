@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync, existsSync, mkdirSync, chmodSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync, mkdirSync, chmodSync, unlinkSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { homedir } from "node:os";
 import {
@@ -125,15 +125,18 @@ export function readCredentials(): UserCredentials | null {
   const path = getCredentialsPath();
   if (!existsSync(path)) return null;
 
-  const raw = readFileSync(path, "utf-8");
-  const creds = JSON.parse(raw) as UserCredentials;
+  const raw = readFileSync(path, "utf-8").trim();
+  if (!raw) return null;
 
-  // Check expiry
-  if (new Date(creds.expires_at) < new Date()) {
+  try {
+    const creds = JSON.parse(raw) as UserCredentials;
+    if (new Date(creds.expires_at) < new Date()) {
+      return null;
+    }
+    return creds;
+  } catch {
     return null;
   }
-
-  return creds;
 }
 
 export function writeCredentials(creds: UserCredentials): void {
@@ -150,8 +153,6 @@ export function writeCredentials(creds: UserCredentials): void {
 export function deleteCredentials(): void {
   const path = getCredentialsPath();
   if (existsSync(path)) {
-    writeFileSync(path, "");
-    const { unlinkSync } = require("node:fs");
     unlinkSync(path);
   }
 }
