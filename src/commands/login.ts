@@ -76,7 +76,16 @@ async function runLogin(flags: { apiUrl?: string; json?: boolean }) {
       writeCredentials(creds);
 
       if (flags.json) {
-        logger.json({ logged_in: true, email: creds.email });
+        logger.json({
+          logged_in: true,
+          email: creds.email,
+          advertiser_id: creds.advertiser_id,
+          next_steps: [
+            "affitor init",
+            "affitor programs",
+            "affitor status",
+          ],
+        });
         return;
       }
 
@@ -85,7 +94,15 @@ async function runLogin(flags: { apiUrl?: string; json?: boolean }) {
       logger.info("");
       logger.info(`  Credentials saved to ${pc.dim("~/.affitor/credentials.json")}`);
       logger.info(`  Token expires in 90 days.`);
-      logger.info("");
+
+      logger.titledBox("What's next?", [
+        "",
+        `  ${pc.cyan("affitor init")}        ${pc.dim("Set up a new affiliate program")}`,
+        `  ${pc.cyan("affitor programs")}    ${pc.dim("List your programs")}`,
+        `  ${pc.cyan("affitor status")}      ${pc.dim("Check program health")}`,
+        `  ${pc.cyan("affitor help")}        ${pc.dim("See all commands")}`,
+        "",
+      ]);
       return;
     }
 

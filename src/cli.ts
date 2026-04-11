@@ -10,6 +10,7 @@ import { registerInitCommand } from "./commands/init.js";
 import { registerSetupCommand } from "./commands/setup-stripe.js";
 import { registerStatusCommand } from "./commands/status.js";
 import { registerTestCommand } from "./commands/test.js";
+import { registerProgramsCommand } from "./commands/programs.js";
 
 const program = new Command();
 
@@ -61,5 +62,6 @@ registerInitCommand(program);
 registerSetupCommand(program);
 registerStatusCommand(program);
 registerTestCommand(program);
+registerProgramsCommand(program);
 
 program.parse();

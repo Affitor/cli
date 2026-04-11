@@ -3,6 +3,7 @@ import type {
   InitResponse,
   StripeConnectResponse,
   ProgramStatus,
+  ProgramSummary,
   TestEventResult,
 } from "../types.js";
 import * as logger from "./logger.js";
@@ -57,6 +58,7 @@ export class AffitorAPI {
     commission_rate: number;
     cookie_duration: number;
     duration_months?: number;
+    advertiser_id?: number;
   }): Promise<InitResponse> {
     return this.request<InitResponse>("/api/v1/cli/init", {
       method: "POST",
@@ -97,6 +99,10 @@ export class AffitorAPI {
   }
 
   // ─── Program endpoints ──────────────────────────────────────────
+
+  async listPrograms(): Promise<ProgramSummary[]> {
+    return this.request<ProgramSummary[]>("/api/v1/cli/programs");
+  }
 
   async sendTestEvent(data: {
     program_id: string;
