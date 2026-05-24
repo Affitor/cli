@@ -23,6 +23,7 @@ import type { AffitorConfig, CLIFlags, CommissionType } from "../types.js";
 import { DEFAULT_API_URL } from "../types.js";
 import { getFlags } from "../lib/flags.js";
 import { readCredentials } from "../lib/config.js";
+import { runInstallWizard } from "../lib/wizard.js";
 import pc from "picocolors";
 
 export function registerInitCommand(program: Command) {
@@ -38,6 +39,7 @@ export function registerInitCommand(program: Command) {
     .option("--commission-rate <rate>", "Commission rate (% or $)", parseFloat)
     .option("--cookie-duration <days>", "Cookie duration in days", parseInt)
     .option("--duration-months <months>", "Commission duration in months (for recurring)", parseInt)
+    .option("--no-wizard", "Skip the auto-install wizard and print manual setup steps")
     .action(async (opts, cmd) => {
       await runInit(opts, getFlags(cmd));
     });
@@ -51,6 +53,7 @@ async function runInit(
     commissionRate?: number;
     cookieDuration?: number;
     durationMonths?: number;
+    wizard?: boolean;
   },
   flags: CLIFlags,
 ) {
@@ -248,23 +251,36 @@ async function runInit(
     "",
   ]);
 
-  logger.titledBox("Next Steps", [
+  // AI-install wizard: detect stack → install @affitor/sdk → wire tracking
+  // (diff-preview + confirm). Falls back to manual steps when skipped or
+  // non-interactive. Never runs in --json mode.
+  const runWizard = interactive && !flags.json && opts.wizard !== false;
+  if (runWizard) {
+    await runInstallWizard({
+      cwd: process.cwd(),
+      programId: response.program_id,
+      apiUrl,
+      autoConfirm: flags.autoConfirm,
+    });
+  } else {
+    logger.titledBox("Tracking setup (manual)", [
+      "",
+      `  ${format.bold(format.cyan("1"))}  Add the tracking script to your ${format.dim("<head>")}:`,
+      "",
+      `     ${format.cyan(`<script src="${apiUrl}/js/affitor-tracker.js"`)}`,
+      `     ${format.cyan(`  data-affitor-program-id="${response.program_id}"></script>`)}`,
+      "",
+      `  ${format.bold(format.cyan("2"))}  Track signups ${format.dim("(after a user registers)")}:`,
+      "",
+      `     ${format.cyan(`window.affitor.signup("user_id", "email@example.com");`)}`,
+      "",
+    ]);
+  }
+
+  logger.titledBox("Then", [
     "",
-    `  ${format.bold(format.cyan("1"))}  Add tracking script to your ${format.dim("<head>")}:`,
-    "",
-    `     ${format.cyan(`<script src="${apiUrl}/js/affitor-tracker.js"`)}`,
-    `     ${format.cyan(`  data-affitor-program-id="${response.program_id}">`)}`,
-    `     ${format.cyan(`</script>`)}`,
-    "",
-    `  ${format.bold(format.cyan("2"))}  Track signups ${format.dim("(call after user registers)")}:`,
-    "",
-    `     ${format.cyan(`window.affitor.signup("user_id", "email@example.com");`)}`,
-    "",
-    `  ${format.bold(format.cyan("3"))}  Connect Stripe:`,
-    `     ${format.dim("$")} npx affitor setup stripe`,
-    "",
-    `  ${format.bold(format.cyan("4"))}  Test integration:`,
-    `     ${format.dim("$")} npx affitor test click`,
+    `  ${format.bold(format.cyan("→"))}  Connect Stripe:  ${format.dim("$")} npx affitor setup stripe`,
+    `  ${format.bold(format.cyan("→"))}  Test it:         ${format.dim("$")} npx affitor test click`,
     "",
   ]);
 
