@@ -1,0 +1,50 @@
+{
+  "name": "@affitor/sdk",
+  "version": "0.1.0",
+  "description": "Affitor browser tracking SDK — typed init()/signup() for affiliate attribution.",
+  "type": "module",
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "sideEffects": false,
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "lint": "tsc --noEmit"
+  },
+  "keywords": [
+    "affiliate",
+    "tracking",
+    "affitor",
+    "attribution",
+    "sdk"
+  ],
+  "author": "Affitor <hello@affitor.com>",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Affitor/affiliate-cli",
+    "directory": "packages/sdk"
+  },
+  "homepage": "https://affitor.com",
+  "engines": {
+    "node": ">=18"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.0",
+    "vitest": "^3.1.0",
+    "jsdom": "^25.0.0",
+    "@types/node": "^22.0.0"
+  }
+}
