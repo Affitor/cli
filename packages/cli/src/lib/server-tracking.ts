@@ -49,6 +49,7 @@ export interface TrackingSnippets {
   lead: string;
   saleContext: string;
   sale: string;
+  refund: string;
 }
 
 /**
@@ -122,5 +123,11 @@ export function serverTrackingSnippets(
       ].join("\n");
   }
 
-  return { importPath, lead, saleContext, sale };
+  const refund = [
+    `// In your provider's refund webhook (e.g. order.refunded), reverse the commission`,
+    `// (full refund → omit amount; partial → pass refundAmountCents):`,
+    `await affitor.trackRefund({ invoiceId /* the same id you passed to trackSale */ });`,
+  ].join("\n");
+
+  return { importPath, lead, saleContext, sale, refund };
 }

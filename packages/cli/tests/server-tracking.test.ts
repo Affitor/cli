@@ -84,4 +84,10 @@ describe("serverTrackingSnippets", () => {
     expect(s.sale).toContain("amount: amountInCents");
     expect(s.sale).toContain("invoiceId: transactionId");
   });
+
+  it("includes a refund snippet (trackRefund by invoiceId)", () => {
+    const s = serverTrackingSnippets("polar");
+    expect(s.refund).toContain("affitor.trackRefund({ invoiceId");
+    expect(s.refund).toContain("refund webhook");
+  });
 });

@@ -100,3 +100,28 @@ describe('error handling', () => {
     expect(r).toMatchObject({ ok: false, status: 0, error: 'boom' });
   });
 });
+
+describe('trackRefund', () => {
+  it('POSTs to /api/v1/track/refund with Bearer + mapped body', async () => {
+    const f = mockFetch();
+    await client(f).trackRefund({ invoiceId: 'inv_1', refundAmountCents: 2500, refundReason: 'customer request' });
+    const [url, opts] = f.mock.calls[0];
+    expect(url).toBe('https://api.test/api/v1/track/refund');
+    expect(opts.headers.Authorization).toBe('Bearer aff_test');
+    expect(JSON.parse(opts.body)).toEqual({
+      transaction_id: 'inv_1',
+      refund_amount_cents: 2500,
+      refund_reason: 'customer request',
+    });
+  });
+
+  it('full refund (amount omitted) → only transaction_id on the wire', async () => {
+    const f = mockFetch();
+    await client(f).trackRefund({ invoiceId: 'inv_2' });
+    expect(JSON.parse(f.mock.calls[0][1].body)).toEqual({ transaction_id: 'inv_2' });
+  });
+
+  it('throws without invoiceId', () => {
+    expect(() => client(mockFetch()).trackRefund({ invoiceId: '' })).toThrow(/invoiceId/);
+  });
+});
