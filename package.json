@@ -2,7 +2,7 @@
   "name": "affitor-monorepo",
   "version": "0.0.0",
   "private": true,
-  "description": "Affitor monorepo — CLI (affitor) + browser SDK (@affitor/sdk).",
+  "description": "Affitor monorepo — CLI (affitor) + browser SDK (affitor-sdk).",
   "type": "module",
   "workspaces": [
     "packages/*"

@@ -1,5 +1,5 @@
 /**
- * @affitor/node — Affitor server-side SDK
+ * affitor-node — Affitor server-side SDK
  *
  * Typed, Bearer-authenticated client over the Affitor conversion API
  * (`/api/v1/track/{click,lead,sale}`). Use it from your backend to report
@@ -179,7 +179,7 @@ export class Affitor {
     );
   }
 
-  /** Track a click (usually done in the browser via @affitor/sdk). Public endpoint, no auth. */
+  /** Track a click (usually done in the browser via affitor-sdk). Public endpoint, no auth. */
   trackClick(input: TrackClickInput = {}): Promise<AffitorResponse> {
     return this.post(
       '/api/v1/track/click',
