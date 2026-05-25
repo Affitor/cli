@@ -1,5 +1,5 @@
 {
-  "name": "@affitor/node",
+  "name": "affitor-node",
   "version": "0.1.0",
   "description": "Affitor server-side SDK — typed trackLead()/trackSale() over the Affitor conversion API (Bearer). Provider-agnostic.",
   "type": "module",

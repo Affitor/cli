@@ -1,4 +1,4 @@
-# @affitor/node
+# affitor-node
 
 Affitor **server-side** SDK — typed `trackLead()` / `trackSale()` over the Affitor
 conversion API. Provider-agnostic: works with Stripe, Polar, Lemon Squeezy, Paddle,
@@ -7,13 +7,13 @@ or any payment processor.
 ## Install
 
 ```bash
-npm i @affitor/node
+npm i affitor-node
 ```
 
 ## Usage
 
 ```ts
-import { Affitor } from '@affitor/node';
+import { Affitor } from 'affitor-node';
 
 const affitor = new Affitor({ apiKey: process.env.AFFITOR_API_KEY! });
 
@@ -36,7 +36,7 @@ await affitor.trackSale({
 No need to thread the click id through a Merchant-of-Record checkout.
 
 Server-side only — the program API key is a secret; never ship it to a browser.
-For browser click/lead capture use [`@affitor/sdk`](../sdk).
+For browser click/lead capture use [`affitor-sdk`](../sdk).
 
 ## API
 

@@ -251,7 +251,7 @@ async function runInit(
     "",
   ]);
 
-  // AI-install wizard: detect stack → install @affitor/sdk → wire tracking
+  // AI-install wizard: detect stack → install affitor-sdk → wire tracking
   // (diff-preview + confirm). Falls back to manual steps when skipped or
   // non-interactive. Never runs in --json mode.
   const runWizard = interactive && !flags.json && opts.wizard !== false;

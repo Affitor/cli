@@ -1,5 +1,5 @@
 {
-  "name": "@affitor/sdk",
+  "name": "affitor-sdk",
   "version": "0.1.0",
   "description": "Affitor browser tracking SDK — typed init()/signup() for affiliate attribution.",
   "type": "module",

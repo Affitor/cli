@@ -1,4 +1,4 @@
-# @affitor/sdk
+# affitor-sdk
 
 Affitor browser tracking SDK — typed `init()` / `signup()` for affiliate attribution.
 
@@ -9,13 +9,13 @@ Same endpoints and payloads as the legacy `affitor-tracker.js` script.
 ## Install
 
 ```bash
-npm i @affitor/sdk
+npm i affitor-sdk
 ```
 
 ## Usage
 
 ```ts
-import { init, signup } from '@affitor/sdk';
+import { init, signup } from 'affitor-sdk';
 
 // On app load (client-side):
 init({ programId: 123 });

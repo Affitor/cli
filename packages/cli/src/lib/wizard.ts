@@ -13,8 +13,8 @@ import {
   type TrackingSnippets,
 } from "./server-tracking.js";
 
-const SDK_PACKAGE = "@affitor/sdk";
-const NODE_PACKAGE = "@affitor/node";
+const SDK_PACKAGE = "affitor-sdk";
+const NODE_PACKAGE = "affitor-node";
 
 export interface WizardOptions {
   cwd: string;
@@ -39,7 +39,7 @@ function installCommand(pm: PackageManager, pkg: string): { cmd: string; args: s
 }
 
 /**
- * Auto-install wizard: detect the stack, install @affitor/sdk, create the
+ * Auto-install wizard: detect the stack, install affitor-sdk, create the
  * tracker component, and wire it into the app entry — with a diff preview and
  * confirmation. Never edits auth/checkout code (signup() is printed as a
  * snippet). Any failure degrades gracefully to printed instructions.
@@ -54,7 +54,7 @@ export async function runInstallWizard(opts: WizardOptions): Promise<void> {
     "",
   ]);
 
-  // ── Browser tracking (@affitor/sdk) — click capture ──
+  // ── Browser tracking (affitor-sdk) — click capture ──
   if (stack.framework === "unknown" || !stack.entryFile || !stack.componentDir) {
     logger.step("Framework not auto-detectable — add the browser tracker manually:");
     printScriptTagInstructions(opts);
@@ -97,7 +97,7 @@ export async function runInstallWizard(opts: WizardOptions): Promise<void> {
     }
   }
 
-  // ── Server-side conversion (@affitor/node) — lead binding + sale ──
+  // ── Server-side conversion (affitor-node) — lead binding + sale ──
   // Install + scaffold the client; print guided snippets. Never edits auth/payment code.
   await setupServerTracking(opts, stack.packageManager);
 }
@@ -105,7 +105,7 @@ export async function runInstallWizard(opts: WizardOptions): Promise<void> {
 async function setupServerTracking(opts: WizardOptions, pm: PackageManager): Promise<void> {
   const provider = detectPaymentProvider(opts.cwd);
 
-  logger.titledBox("Server-side conversion (@affitor/node)", [
+  logger.titledBox("Server-side conversion (affitor-node)", [
     "",
     `  Payment provider:  ${provider === "unknown" ? format.yellow("not detected") : format.green(provider)}`,
     "",

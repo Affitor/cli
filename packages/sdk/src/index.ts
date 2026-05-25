@@ -1,5 +1,5 @@
 /**
- * @affitor/sdk — Affitor browser tracking SDK
+ * affitor-sdk — Affitor browser tracking SDK
  *
  * Typed npm package wrapping the Affitor tracker. Captures `?aff=` attribution,
  * persists the click id in a first-party cookie, and reports click + lead
@@ -7,7 +7,7 @@
  * same endpoints, same payloads, same `affitor_click_id` cookie.
  *
  * Usage:
- *   import { init, signup } from '@affitor/sdk';
+ *   import { init, signup } from 'affitor-sdk';
  *   init({ programId: 123 });                       // on app load (client-side)
  *   await signup('customer_123', 'user@example.com'); // at signup/checkout
  *
