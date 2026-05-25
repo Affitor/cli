@@ -135,6 +135,8 @@ function printServerSnippets(s: TrackingSnippets): void {
   for (const l of s.lead.split("\n")) lines.push(`  ${format.cyan(l)}`);
   lines.push("", `  ${format.dim(`2) At purchase — ${s.saleContext}:`)}`);
   for (const l of s.sale.split("\n")) lines.push(`  ${format.cyan(l)}`);
+  lines.push("", `  ${format.dim("3) On refund — reverse the commission:")}`);
+  for (const l of s.refund.split("\n")) lines.push(`  ${format.cyan(l)}`);
   lines.push("", `  ${format.dim("Paste these in — the wizard never edits your auth/payment code.")}`, "");
   logger.titledBox("Track conversions (add to your backend)", lines);
 }

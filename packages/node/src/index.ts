@@ -59,6 +59,14 @@ export interface TrackClickInput {
   existingClickId?: string;
 }
 
+export interface TrackRefundInput {
+  /** The sale's idempotency key (the `invoiceId` you passed to trackSale). */
+  invoiceId: string;
+  /** Refund amount in integer cents. Omit (or 0) = full refund → commission reversed; partial → refunded. */
+  refundAmountCents?: number;
+  refundReason?: string;
+}
+
 export interface AffitorResponse<T = unknown> {
   ok: boolean;
   status: number;
@@ -182,6 +190,26 @@ export class Affitor {
         existing_click_id: input.existingClickId,
       },
       false,
+    );
+  }
+
+  /**
+   * Reverse the commission for a sale on refund. Call from your provider's
+   * refund webhook. Full refund (amount omitted) → commission `reversed`;
+   * partial → `refunded` (proportional). Idempotent by `invoiceId`.
+   */
+  trackRefund(input: TrackRefundInput): Promise<AffitorResponse> {
+    if (!input.invoiceId) {
+      throw new Error('Affitor.trackRefund: `invoiceId` is required');
+    }
+    return this.post(
+      '/api/v1/track/refund',
+      {
+        transaction_id: input.invoiceId,
+        refund_amount_cents: input.refundAmountCents,
+        refund_reason: input.refundReason,
+      },
+      true,
     );
   }
 }
