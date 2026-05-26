@@ -147,9 +147,17 @@ export class AffitorAPI {
         }
 
         if (!res.ok) {
-          const body = await res.json().catch(() => ({}));
+          const body = (await res.json().catch(() => ({}))) as {
+            error?: string | { message?: string };
+            message?: string;
+          };
+          // Strapi returns errors as an object ({ error: { message, ... } }),
+          // but some endpoints return { error: "string" } or { message }.
+          // Extract a string so we never surface "[object Object]".
+          const rawError = body.error;
           const message =
-            (body as Record<string, string>).error ??
+            (typeof rawError === "string" ? rawError : rawError?.message) ??
+            body.message ??
             `API returned ${res.status}`;
           throw new APIError(res.status, message);
         }
