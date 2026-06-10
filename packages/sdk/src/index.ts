@@ -17,9 +17,12 @@
 
 const DEFAULT_API_BASE = 'https://api.affitor.com';
 const CLICK_ID_COOKIE = 'affitor_click_id';
+const CLICK_IDS_COOKIE = 'affitor_click_ids';
 const AFF_URL_COOKIE = 'affitor_aff_url';
 const LEGACY_CLICK_ID_COOKIE = 'customer_code';
 const DEFAULT_COOKIE_EXPIRE_DAYS = 60;
+/** Max click ids kept in the list cookie (server caps at the same number). */
+const MAX_CLICK_IDS = 20;
 
 export interface AffitorInitOptions {
   /** Affiliate program id. Falls back to a `data-affitor-program-id` script tag or `window.AFFITOR_PROGRAM_ID`. */
@@ -187,6 +190,37 @@ export class AffitorTracker {
     return null;
   }
 
+  /**
+   * Full click-id history from the list cookie (oldest → newest, capped).
+   * The single `affitor_click_id` cookie keeps only the LAST click; this list
+   * preserves every click this browser made so the server can evaluate
+   * last-click-before-signup across partners ("click_ids" on the lead call).
+   */
+  getClickIds(): string[] {
+    const raw = this.getCookie(CLICK_IDS_COOKIE);
+    let list: string[] = [];
+    if (raw) {
+      try {
+        list = decodeURIComponent(raw).split('|').filter(Boolean);
+      } catch {
+        list = [];
+      }
+    }
+    // Self-heal: make sure the current single click id is always represented
+    // (covers cookies written by SDK versions predating the list).
+    const current = this.clickId || this.getCookie(CLICK_ID_COOKIE);
+    if (current && !list.includes(current)) list.push(current);
+    return list.slice(-MAX_CLICK_IDS);
+  }
+
+  /** Append a click id to the list cookie (dedup, newest last, capped). */
+  private appendClickIdToList(clickId: string): void {
+    if (!clickId) return;
+    const list = this.getClickIds().filter((id) => id !== clickId);
+    list.push(clickId);
+    this.setCookie(CLICK_IDS_COOKIE, encodeURIComponent(list.slice(-MAX_CLICK_IDS).join('|')));
+  }
+
   /** Click id from cookie, migrating the legacy `customer_code` cookie if present. */
   private getClickIdFromCookie(): string | null {
     const clickId = this.getCookie(CLICK_ID_COOKIE);
@@ -231,6 +265,7 @@ export class AffitorTracker {
           this.clickId = data.click_id;
           this.setCookie(CLICK_ID_COOKIE, data.click_id);
           this.setCookie(LEGACY_CLICK_ID_COOKIE, data.click_id); // legacy integrations
+          this.appendClickIdToList(data.click_id); // full history for signup attribution
           this.setCookie(AFF_URL_COOKIE, payload.affiliate_url as string);
           this.hasAffiliateAttribution = true;
           this.log('info', 'Click tracked, click_id saved:', data.click_id);
@@ -258,6 +293,10 @@ export class AffitorTracker {
         customer_key: customerKey || null,
         email: email || null,
         click_id: this.clickId || this.getClickIdFromCookie() || null,
+        // Full click history this browser accumulated (oldest → newest) so the
+        // server can evaluate last-click-before-signup across partners.
+        // Ignored by older servers — additive contract.
+        click_ids: this.getClickIds(),
         page_url: window.location.href,
         session_id: this.sessionId,
         program_id: this.programId,
