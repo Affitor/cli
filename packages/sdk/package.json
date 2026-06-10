@@ -1,7 +1,7 @@
 {
   "name": "affitor-sdk",
-  "version": "0.1.0",
-  "description": "Affitor browser tracking SDK — typed init()/signup() for affiliate attribution.",
+  "version": "0.2.0",
+  "description": "Affitor browser tracking SDK \u2014 typed init()/signup() for affiliate attribution.",
   "type": "module",
   "main": "./dist/index.js",
   "module": "./dist/index.js",

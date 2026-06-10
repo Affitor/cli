@@ -117,3 +117,62 @@ describe('functional facade', () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 });
+
+describe('click-id list cookie (Stage 1.3a — signup attribution candidates)', () => {
+  function okClick(clickId: string) {
+    return { ok: true, json: async () => ({ click_id: clickId, cookie_window_days: 60 }) };
+  }
+
+  it('accumulates every tracked click (dedup, ordered oldest → newest)', async () => {
+    const t = new AffitorTracker({ programId: 123, apiBase: API });
+    fetchMock.mockResolvedValueOnce(okClick('clk_a'));
+    await t.trackClick('http://localhost/?aff=P1');
+    fetchMock.mockResolvedValueOnce(okClick('clk_b'));
+    await t.trackClick('http://localhost/?aff=P2');
+    fetchMock.mockResolvedValueOnce(okClick('clk_a')); // re-click P1 → dedup, moves to newest
+    await t.trackClick('http://localhost/?aff=P1');
+
+    expect(t.getClickIds()).toEqual(['clk_b', 'clk_a']);
+  });
+
+  it('signup() sends the full click_ids history alongside the single click_id', async () => {
+    const t = new AffitorTracker({ programId: 123, apiBase: API });
+    fetchMock.mockResolvedValueOnce(okClick('clk_a'));
+    await t.trackClick('http://localhost/?aff=P1');
+    fetchMock.mockResolvedValueOnce(okClick('clk_b'));
+    await t.trackClick('http://localhost/?aff=P2');
+
+    fetchMock.mockResolvedValueOnce({ ok: true, json: async () => ({}) });
+    await t.signup('user_1', 'jane@example.com');
+
+    const leadCall = fetchMock.mock.calls.find((c) => `${c[0]}`.includes('/v1/track/lead'));
+    expect(leadCall).toBeTruthy();
+    const body = JSON.parse(leadCall![1].body);
+    expect(body.click_id).toBe('clk_b');
+    expect(body.click_ids).toEqual(['clk_a', 'clk_b']);
+  });
+
+  it('self-heals from a pre-list cookie: lone affitor_click_id still appears in click_ids', async () => {
+    // Simulate a browser whose cookies were written by an older SDK version.
+    document.cookie = 'affitor_click_id=clk_legacy; path=/';
+    const t = new AffitorTracker({ programId: 123, apiBase: API });
+
+    fetchMock.mockResolvedValueOnce({ ok: true, json: async () => ({}) });
+    await t.signup('user_1');
+
+    const body = JSON.parse(fetchMock.mock.calls[0][1].body);
+    expect(body.click_ids).toEqual(['clk_legacy']);
+  });
+
+  it('caps the list at 20 ids (drops oldest)', async () => {
+    const t = new AffitorTracker({ programId: 123, apiBase: API });
+    for (let i = 0; i < 25; i++) {
+      fetchMock.mockResolvedValueOnce(okClick(`clk_${String(i).padStart(2, '0')}`));
+      await t.trackClick(`http://localhost/?aff=P${i}`);
+    }
+    const ids = t.getClickIds();
+    expect(ids).toHaveLength(20);
+    expect(ids[0]).toBe('clk_05'); // oldest five dropped
+    expect(ids[19]).toBe('clk_24');
+  });
+});
