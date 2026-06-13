@@ -279,14 +279,14 @@ Add this script tag to every page in \`<head>\`. It auto-detects affiliate visit
 </script>
 \`\`\`
 
-For React/Next.js, use the SDK instead:
+For React/Next.js, use the SDK:
 
 \`\`\`bash
-npm install @affitor/tracker
+npm install affitor-sdk
 \`\`\`
 
 \`\`\`tsx
-import { AffitorProvider } from '@affitor/tracker/react';
+import { AffitorProvider } from 'affitor-sdk/react';
 
 <AffitorProvider programId="${config.program_id}">
   {children}
