@@ -17,6 +17,7 @@ const EXPECTED_TOOLS = [
   'affitor_track_sale',
   'affitor_track_refund',
   'affitor_track_click',
+  'affitor_get_integration_plan',
 ] as const;
 
 // ── 1. Integration: spawn the BUILT server over stdio, drive with MCP Client ──
@@ -44,7 +45,7 @@ describe('@affitor/mcp stdio server (spawned, built dist)', () => {
     expect(info?.name).toBe('affitor');
   });
 
-  it('tools/list returns the 5 tools with input schemas', async () => {
+  it('tools/list returns the 6 tools with input schemas', async () => {
     const { tools } = await client.listTools();
     const names = tools.map((t) => t.name).sort();
     expect(names).toEqual([...EXPECTED_TOOLS].sort());
@@ -187,6 +188,48 @@ describe('@affitor/mcp tool handlers (stubbed client)', () => {
     expect(res.isError).toBeFalsy();
     expect(seen).toHaveLength(1);
     expect(seen[0]).toMatchObject({ clickId: 'clk_1', amount: 1000, invoiceId: 'inv_x' });
+
+    await client.close();
+  });
+
+  it('affitor_get_integration_plan returns a pure plan (no client call)', async () => {
+    const stub: AffitorLike = {
+      readiness: async () => {
+        throw new Error('readiness should not be called');
+      },
+      trackLead: async () => {
+        throw new Error('trackLead should not be called');
+      },
+      trackSale: async () => {
+        throw new Error('trackSale should not be called');
+      },
+      trackRefund: async () => {
+        throw new Error('trackRefund should not be called');
+      },
+      trackClick: async () => {
+        throw new Error('trackClick should not be called');
+      },
+    };
+
+    const server = new McpServer({ name: 'affitor', version: '0.1.0' });
+    registerTools(server, stub);
+    const [ct, st] = InMemoryTransport.createLinkedPair();
+    const client = new Client({ name: 'test', version: '0.0.0' });
+    await Promise.all([server.connect(st), client.connect(ct)]);
+
+    const res = await client.callTool({
+      name: 'affitor_get_integration_plan',
+      arguments: { framework: 'fastify', provider: 'stripe', mode: 's2s' },
+    });
+    expect(res.isError).toBeFalsy();
+    const text = (res.content as { type: string; text: string }[])[0].text;
+    const plan = JSON.parse(text) as {
+      steps: string[];
+      recipe: { sale_path: string; sale: { inject_target: string } | null };
+    };
+    expect(plan.recipe.sale_path).toBe('webhook_sdk');
+    expect(plan.recipe.sale?.inject_target).toContain("fastify.post('/webhooks/stripe'");
+    expect(plan.steps).toHaveLength(5);
 
     await client.close();
   });

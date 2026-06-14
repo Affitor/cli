@@ -1,7 +1,7 @@
 {
-  "name": "@affitor/mcp",
+  "name": "@affitor/recipes",
   "version": "0.1.0",
-  "description": "Model Context Protocol (MCP) stdio server for Affitor — lets AI agents (Claude Desktop, Cursor, …) call Affitor affiliate-tracking capabilities as tools.",
+  "description": "Canonical per-stack payment-tracking recipe registry for Affitor — the single source of truth read by the CLI, the MCP server, and the docs. Pure data, no runtime deps.",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -11,30 +11,22 @@
       "import": "./dist/index.js"
     }
   },
-  "bin": {
-    "affitor-mcp": "./dist/index.js"
-  },
   "files": [
     "dist"
   ],
   "scripts": {
     "build": "tsc",
-    "dev": "tsc --watch",
-    "start": "node dist/index.js",
     "lint": "tsc --noEmit",
-    "test": "vitest run --passWithNoTests",
-    "prepublishOnly": "npm run build"
+    "test": "vitest run --passWithNoTests"
   },
   "keywords": [
     "affitor",
-    "mcp",
-    "model-context-protocol",
+    "recipes",
     "affiliate",
     "tracking",
-    "agent",
-    "ai",
-    "claude",
-    "cursor"
+    "payment",
+    "integration",
+    "agent"
   ],
   "author": "Affitor <hello@affitor.com>",
   "license": "MIT",
@@ -45,12 +37,6 @@
   "homepage": "https://affitor.com",
   "engines": {
     "node": ">=18"
-  },
-  "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.29.0",
-    "@affitor/sdk": "^2.1.0",
-    "@affitor/recipes": "*",
-    "zod": "^3.23.8"
   },
   "devDependencies": {
     "typescript": "^5.7.0",

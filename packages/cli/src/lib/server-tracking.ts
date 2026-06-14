@@ -1,11 +1,16 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { getRecipe, type Provider as RecipeProvider } from "@affitor/recipes";
 
 /**
  * Server-side conversion tracking helpers for the wizard (@affitor/sdk/server path).
  * Pure functions (detection + generated source/snippets) — easy to unit test.
  * The wizard installs @affitor/sdk + scaffolds the client file, then PRINTS the
  * trackLead/trackSale snippets — it never edits auth/payment code (per PR-4 §9.3).
+ *
+ * The per-provider `sale` snippet is SOURCED FROM `@affitor/recipes` (the canonical
+ * single source of truth read by CLI + MCP + docs). Do NOT re-inline the snippet
+ * strings here — edit them in `@affitor/recipes` so all three surfaces stay in sync.
  */
 
 export type PaymentProvider = "stripe" | "polar" | "lemonsqueezy" | "paddle" | "unknown";
@@ -53,6 +58,19 @@ export interface TrackingSnippets {
 }
 
 /**
+ * The trackSale snippet body for a provider, sourced from the canonical
+ * `@affitor/recipes` registry. We use framework "unknown" (the snippet body is
+ * framework-independent) + mode "s2s" (so a sale snippet exists, not the
+ * Connect/metadata-only path), then strip the leading `@affitor/sdk/server`
+ * import + its blank line — the wizard prints that import via the lead snippet.
+ */
+function recipeSaleBody(provider: PaymentProvider): string {
+  const recipe = getRecipe("unknown", provider as RecipeProvider, "s2s");
+  const snippet = recipe.sale?.snippet ?? "";
+  return snippet.replace(/^import \{ Affitor \} from '@affitor\/sdk\/server';\n\n/, "");
+}
+
+/**
  * Tailored trackLead + trackSale snippets. The sale snippet is provider-specific
  * (event name + field paths from the verified provider research). Printed, not
  * auto-applied.
@@ -67,60 +85,30 @@ export function serverTrackingSnippets(
     `await affitor.trackLead({ customerExternalId: user.id, clickId: cookies.affitor_click_id });`,
   ].join("\n");
 
+  // The trackSale snippet body is canonical in @affitor/recipes. We pull it from
+  // there (framework "unknown" — the body is framework-independent; only the
+  // inject_target differs, which the wizard doesn't print) and strip the SDK
+  // import line the recipe prepends (the wizard already prints the import as part
+  // of the lead snippet, via `importPath`).
+  const sale = recipeSaleBody(provider);
+
   let saleContext: string;
-  let sale: string;
   switch (provider) {
     case "polar":
       saleContext = "in your Polar webhook handler (event 'order.paid')";
-      sale = [
-        `await affitor.trackSale({`,
-        `  customerExternalId: order.metadata.user_id ?? order.customer_id,`,
-        `  amount: order.total_amount,        // integer cents`,
-        `  invoiceId: order.id,`,
-        `  saleType: order.subscription_id ? 'subscription' : 'payment',`,
-        `});`,
-      ].join("\n");
       break;
     case "lemonsqueezy":
       saleContext = "in your Lemon Squeezy webhook handler (event 'order_created')";
-      sale = [
-        `await affitor.trackSale({`,
-        `  customerExternalId: payload.meta.custom_data?.user_id ?? data.attributes.user_email,`,
-        `  amount: data.attributes.total,     // integer cents`,
-        `  invoiceId: String(data.id),`,
-        `});`,
-      ].join("\n");
       break;
     case "paddle":
       saleContext = "in your Paddle webhook handler (event 'transaction.completed')";
-      sale = [
-        `await affitor.trackSale({`,
-        `  customerExternalId: data.custom_data?.user_id,`,
-        `  amount: Number(data.details.totals.total),   // cents`,
-        `  invoiceId: data.id,`,
-        `});`,
-      ].join("\n");
       break;
     case "stripe":
       saleContext =
         "Stripe: prefer Connect autocapture (`affitor stripe connect`). To track manually, in your checkout.session.completed handler";
-      sale = [
-        `await affitor.trackSale({`,
-        `  customerExternalId: session.client_reference_id,`,
-        `  amount: session.amount_total,      // cents`,
-        `  invoiceId: session.id,`,
-        `});`,
-      ].join("\n");
       break;
     default:
       saleContext = "in your payment provider's webhook handler, when a payment succeeds";
-      sale = [
-        `await affitor.trackSale({`,
-        `  customerExternalId: user.id,`,
-        `  amount: amountInCents,`,
-        `  invoiceId: transactionId,`,
-        `});`,
-      ].join("\n");
   }
 
   const refund = [

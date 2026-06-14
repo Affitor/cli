@@ -44,7 +44,8 @@
     "@inquirer/prompts": "^7.5.0",
     "picocolors": "^1.1.1",
     "open": "^10.1.0",
-    "stripe": "^17.7.0"
+    "stripe": "^17.7.0",
+    "@affitor/recipes": "*"
   },
   "devDependencies": {
     "typescript": "^5.7.0",
