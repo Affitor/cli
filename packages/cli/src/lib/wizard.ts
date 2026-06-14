@@ -13,8 +13,10 @@ import {
   type TrackingSnippets,
 } from "./server-tracking.js";
 
-const SDK_PACKAGE = "affitor-sdk";
-const NODE_PACKAGE = "affitor-node";
+// One consolidated package covers browser + server via subpaths:
+// `@affitor/sdk` (init/signup), `@affitor/sdk/react` (AffitorProvider),
+// `@affitor/sdk/server` (Affitor class). Install it once.
+const SDK_PACKAGE = "@affitor/sdk";
 
 export interface WizardOptions {
   cwd: string;
@@ -39,7 +41,7 @@ function installCommand(pm: PackageManager, pkg: string): { cmd: string; args: s
 }
 
 /**
- * Auto-install wizard: detect the stack, install affitor-sdk, create the
+ * Auto-install wizard: detect the stack, install @affitor/sdk, create the
  * tracker component, and wire it into the app entry — with a diff preview and
  * confirmation. Never edits auth/checkout code (signup() is printed as a
  * snippet). Any failure degrades gracefully to printed instructions.
@@ -54,11 +56,14 @@ export async function runInstallWizard(opts: WizardOptions): Promise<void> {
     "",
   ]);
 
-  // ── Browser tracking (affitor-sdk) — click capture ──
+  // ── Browser tracking (@affitor/sdk) — click capture ──
+  // `@affitor/sdk` is one package covering browser + server (via the /server
+  // subpath); installing it here also satisfies the server-side step below.
+  let sdkInstalled = false;
   if (stack.framework === "unknown" || !stack.entryFile || !stack.componentDir) {
     logger.step("Framework not auto-detectable — add the browser tracker manually:");
     printScriptTagInstructions(opts);
-  } else if (!(await installPackage(stack.packageManager, opts.cwd, SDK_PACKAGE, opts.autoConfirm))) {
+  } else if (!(sdkInstalled = await installPackage(stack.packageManager, opts.cwd, SDK_PACKAGE, opts.autoConfirm))) {
     logger.warn(`Skipped/failed installing ${SDK_PACKAGE} — use the script tag instead:`);
     printScriptTagInstructions(opts);
   } else {
@@ -97,21 +102,29 @@ export async function runInstallWizard(opts: WizardOptions): Promise<void> {
     }
   }
 
-  // ── Server-side conversion (affitor-node) — lead binding + sale ──
-  // Install + scaffold the client; print guided snippets. Never edits auth/payment code.
-  await setupServerTracking(opts, stack.packageManager);
+  // ── Server-side conversion (@affitor/sdk/server) — lead binding + sale ──
+  // Scaffold the client + print guided snippets. The Affitor class ships in the
+  // same `@affitor/sdk` package (via /server), so reuse the browser install
+  // above — never run a second `npm install`. Never edits auth/payment code.
+  await setupServerTracking(opts, stack.packageManager, sdkInstalled);
 }
 
-async function setupServerTracking(opts: WizardOptions, pm: PackageManager): Promise<void> {
+async function setupServerTracking(
+  opts: WizardOptions,
+  pm: PackageManager,
+  sdkInstalled: boolean,
+): Promise<void> {
   const provider = detectPaymentProvider(opts.cwd);
 
-  logger.titledBox("Server-side conversion (affitor-node)", [
+  logger.titledBox("Server-side conversion (@affitor/sdk/server)", [
     "",
     `  Payment provider:  ${provider === "unknown" ? format.yellow("not detected") : format.green(provider)}`,
     "",
   ]);
 
-  const installed = await installPackage(pm, opts.cwd, NODE_PACKAGE, opts.autoConfirm);
+  // `@affitor/sdk` is one package (browser + server). Install it only if the
+  // browser step didn't already — otherwise dedupe and reuse it.
+  const installed = sdkInstalled || (await installPackage(pm, opts.cwd, SDK_PACKAGE, opts.autoConfirm));
   if (installed) {
     const clientDir = existsSync(join(opts.cwd, "src")) ? join(opts.cwd, "src", "lib") : join(opts.cwd, "lib");
     const clientPath = join(clientDir, "affitor.ts");
@@ -123,8 +136,8 @@ async function setupServerTracking(opts: WizardOptions, pm: PackageManager): Pro
       logger.success(`Created ${rel(opts.cwd, clientPath)}`);
     }
   } else {
-    const { cmd, args } = installCommand(pm, NODE_PACKAGE);
-    logger.warn(`Skipped/failed installing ${NODE_PACKAGE} — install it when ready: ${cmd} ${args.join(" ")}`);
+    const { cmd, args } = installCommand(pm, SDK_PACKAGE);
+    logger.warn(`Skipped/failed installing ${SDK_PACKAGE} — install it when ready: ${cmd} ${args.join(" ")}`);
   }
 
   printServerSnippets(serverTrackingSnippets(provider));

@@ -2,10 +2,10 @@
   "name": "affitor-monorepo",
   "version": "0.0.0",
   "private": true,
-  "description": "Affitor monorepo — CLI (affitor) + browser SDK (affitor-sdk).",
+  "description": "Affitor CLI (affitor). The SDK now ships separately as @affitor/sdk.",
   "type": "module",
   "workspaces": [
-    "packages/*"
+    "packages/cli"
   ],
   "scripts": {
     "build": "npm run build --workspaces --if-present",
