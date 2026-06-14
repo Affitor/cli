@@ -5,7 +5,8 @@
   "description": "Affitor CLI (affitor). The SDK now ships separately as @affitor/sdk.",
   "type": "module",
   "workspaces": [
-    "packages/cli"
+    "packages/cli",
+    "packages/mcp"
   ],
   "scripts": {
     "build": "npm run build --workspaces --if-present",
