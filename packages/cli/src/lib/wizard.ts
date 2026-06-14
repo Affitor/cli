@@ -12,6 +12,7 @@ import {
   serverTrackingSnippets,
   type TrackingSnippets,
 } from "./server-tracking.js";
+import { detectStripeWebhook } from "./webhook-detect.js";
 
 // One consolidated package covers browser + server via subpaths:
 // `@affitor/sdk` (init/signup), `@affitor/sdk/react` (AffitorProvider),
@@ -106,13 +107,14 @@ export async function runInstallWizard(opts: WizardOptions): Promise<void> {
   // Scaffold the client + print guided snippets. The Affitor class ships in the
   // same `@affitor/sdk` package (via /server), so reuse the browser install
   // above — never run a second `npm install`. Never edits auth/payment code.
-  await setupServerTracking(opts, stack.packageManager, sdkInstalled);
+  await setupServerTracking(opts, stack.packageManager, sdkInstalled, stack.framework);
 }
 
 async function setupServerTracking(
   opts: WizardOptions,
   pm: PackageManager,
   sdkInstalled: boolean,
+  framework: Framework,
 ): Promise<void> {
   const provider = detectPaymentProvider(opts.cwd);
 
@@ -138,6 +140,21 @@ async function setupServerTracking(
   } else {
     const { cmd, args } = installCommand(pm, SDK_PACKAGE);
     logger.warn(`Skipped/failed installing ${SDK_PACKAGE} — install it when ready: ${cmd} ${args.join(" ")}`);
+  }
+
+  // If they already verify Stripe webhooks somewhere, point at the exact site
+  // (the trackSale call belongs right after constructEvent). Best-effort hint —
+  // we still print the full snippets below as the canonical reference.
+  if (provider === "stripe") {
+    const hook = detectStripeWebhook(opts.cwd, framework);
+    if (hook) {
+      logger.titledBox("Found your Stripe webhook handler", [
+        "",
+        `  ${format.green(`${hook.file}:${hook.line}`)}  ${format.dim("(stripe.webhooks.constructEvent)")}`,
+        `  ${format.dim(`→ add trackSale ${hook.handlerHint}`)}`,
+        "",
+      ]);
+    }
   }
 
   printServerSnippets(serverTrackingSnippets(provider));

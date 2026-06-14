@@ -63,8 +63,68 @@ describe("detectStack", () => {
     expect(s.packageManager).toBe("pnpm");
   });
 
-  it("returns unknown for non-Next projects", () => {
-    const dir = project({ "package.json": JSON.stringify({ dependencies: { express: "4" } }) });
+  it("detects Fastify (deps include fastify) with a best-effort entry", () => {
+    const dir = project({
+      "package.json": JSON.stringify({ dependencies: { fastify: "4", stripe: "17" } }),
+      "src/server.ts": "import Fastify from 'fastify';",
+    });
+    const s = detectStack(dir);
+    expect(s.framework).toBe("fastify");
+    expect(s.entryFile).toContain(join("src", "server.ts"));
+    expect(s.componentDir).toBeNull(); // backend — stays on printed-snippet path
+  });
+
+  it("detects Express (deps include express)", () => {
+    const dir = project({
+      "package.json": JSON.stringify({ dependencies: { express: "4" } }),
+      "index.js": "const express = require('express');",
+    });
+    const s = detectStack(dir);
+    expect(s.framework).toBe("express");
+    expect(s.entryFile).toContain("index.js");
+    expect(s.componentDir).toBeNull();
+  });
+
+  it("Fastify wins over Express when both deps are present", () => {
+    const dir = project({
+      "package.json": JSON.stringify({ dependencies: { fastify: "4", express: "4" } }),
+    });
+    expect(detectStack(dir).framework).toBe("fastify");
+  });
+
+  it("detects bare node via a stripe dep (server signal, no framework)", () => {
+    const dir = project({
+      "package.json": JSON.stringify({ dependencies: { stripe: "17", pg: "8" } }),
+    });
+    expect(detectStack(dir).framework).toBe("node");
+  });
+
+  it("detects bare node via a start script", () => {
+    const dir = project({
+      "package.json": JSON.stringify({ dependencies: { pg: "8" }, scripts: { start: "node index.js" } }),
+    });
+    expect(detectStack(dir).framework).toBe("node");
+  });
+
+  it("uses package.json main as the node entry when present", () => {
+    const dir = project({
+      "package.json": JSON.stringify({ main: "dist/main.js", dependencies: { stripe: "17" } }),
+      "dist/main.js": "// built entry",
+    });
+    const s = detectStack(dir);
+    expect(s.framework).toBe("node");
+    expect(s.entryFile).toContain(join("dist", "main.js"));
+  });
+
+  it("returns unknown for a non-server project with no framework/signal", () => {
+    const dir = project({
+      "package.json": JSON.stringify({ dependencies: { lodash: "4" } }),
+    });
+    expect(detectStack(dir).framework).toBe("unknown");
+  });
+
+  it("returns unknown when there is no package.json", () => {
+    const dir = project({ "README.md": "hi" });
     expect(detectStack(dir).framework).toBe("unknown");
   });
 });
