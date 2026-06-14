@@ -17,7 +17,7 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/Affitor/affiliate-cli"
+    "url": "https://github.com/Affitor/cli"
   },
   "homepage": "https://affitor.com",
   "engines": {
