@@ -50,9 +50,9 @@ describe("detectPaymentProvider", () => {
 });
 
 describe("affitorClientSource", () => {
-  it("scaffolds a configured affitor-node client reading AFFITOR_API_KEY", () => {
+  it("scaffolds a configured @affitor/sdk/server client reading AFFITOR_API_KEY", () => {
     const src = affitorClientSource();
-    expect(src).toContain("from 'affitor-node'");
+    expect(src).toContain("from '@affitor/sdk/server'");
     expect(src).toContain("new Affitor({ apiKey: process.env.AFFITOR_API_KEY");
     expect(src).toContain("export const affitor");
   });

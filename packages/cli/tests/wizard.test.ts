@@ -129,7 +129,7 @@ describe("trackerComponentSource", () => {
     const src = trackerComponentSource(123, true);
     expect(src.startsWith("'use client';")).toBe(true);
     expect(src).toContain("init({ programId: 123 })");
-    expect(src).toContain("from 'affitor-sdk'");
+    expect(src).toContain("from '@affitor/sdk'");
   });
 
   it("omits 'use client' for Pages Router and quotes string ids", () => {
