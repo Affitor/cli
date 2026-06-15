@@ -5,6 +5,7 @@
   "description": "Affitor CLI (affitor). The SDK now ships separately as @affitor/sdk.",
   "type": "module",
   "workspaces": [
+    "packages/recipes",
     "packages/cli",
     "packages/mcp"
   ],

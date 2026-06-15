@@ -29,6 +29,7 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';
 import { Affitor } from '@affitor/sdk/server';
+import { getIntegrationPlan } from '@affitor/recipes';
 
 /**
  * The subset of the `Affitor` client the MCP tools depend on. Declaring it here
@@ -77,8 +78,12 @@ async function runCall(fn: () => Promise<unknown>): Promise<CallToolResult> {
 }
 
 /**
- * Register the 5 Affitor tools on an MCP server. Exported for unit testing the
+ * Register the 6 Affitor tools on an MCP server. Exported for unit testing the
  * handlers with a stubbed `Affitor` client.
+ *
+ * Five tools wrap the `Affitor` client (readiness + track*). The sixth,
+ * `affitor_get_integration_plan`, is PURE — it reads the canonical recipe
+ * registry (`@affitor/recipes`) and never touches the client or the network.
  */
 export function registerTools(server: McpServer, affitor: AffitorLike): void {
   server.registerTool(
@@ -216,6 +221,39 @@ export function registerTools(server: McpServer, affitor: AffitorLike): void {
           existingClickId: args.existingClickId,
         }),
       ),
+  );
+
+  server.registerTool(
+    'affitor_get_integration_plan',
+    {
+      description:
+        'Return the deterministic Affitor payment-tracking integration plan for a given stack — the install, the checkout-metadata snippet, the trackSale snippet + where to inject it, and the self-verify step. The agent follows this instead of guessing a contract.',
+      inputSchema: {
+        framework: z
+          .enum(['next-app', 'next-pages', 'fastify', 'express', 'node', 'unknown'])
+          .describe('The detected app framework. Determines where trackSale is injected.'),
+        provider: z
+          .enum(['stripe', 'polar', 'lemonsqueezy', 'paddle', 'unknown'])
+          .default('stripe')
+          .describe('The detected payment provider.'),
+        mode: z
+          .enum(['stripe_connect', 's2s'])
+          .optional()
+          .default('stripe_connect')
+          .describe(
+            "Payment-tracking mode. 'stripe_connect' (default) = Connect autocaptures the sale (metadata only, no trackSale); 's2s' = inject trackSale in your webhook.",
+          ),
+      },
+    },
+    async (args) => {
+      // Pure: reads the canonical recipe registry. No SDK client, no network.
+      const plan = getIntegrationPlan({
+        framework: args.framework,
+        provider: args.provider,
+        mode: args.mode,
+      });
+      return ok(plan);
+    },
   );
 }
 
