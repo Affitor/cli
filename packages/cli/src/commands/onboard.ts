@@ -13,7 +13,7 @@ import { detectPaymentProvider } from "../lib/server-tracking.js";
 import { detectStripeWebhook } from "../lib/webhook-detect.js";
 import { injectStripeTrackSale } from "../lib/inject.js";
 import { runInstallWizard } from "../lib/wizard.js";
-import { DEFAULT_API_URL, type CLIFlags, type ReadinessResult } from "../types.js";
+import { DEFAULT_API_URL, type CLIFlags, type ReadinessResult, type TestChainStatus } from "../types.js";
 
 interface OnboardOpts {
   apiKey?: string;
@@ -344,12 +344,17 @@ function writeApiKeyToEnv(
     }
   }
 
-  if (!opts.json) {
-    logger.newline();
-    logger.info(`  ${format.dim(`Add to ${envName}:`)}`);
-    logger.info(`    ${format.green("+ " + line)}`);
-    logger.newline();
+  // --json (non-interactive auto) mode never edits files — the no-auto-edit
+  // contract. Report it as a manual step (mirrors wireServerSale's json branch)
+  // instead of silently mutating the user's root .env/.env.local.
+  if (opts.json) {
+    return { step: "env_key", status: "manual", detail: `${envName}: json mode (no auto-edit)` };
   }
+
+  logger.newline();
+  logger.info(`  ${format.dim(`Add to ${envName}:`)}`);
+  logger.info(`    ${format.green("+ " + line)}`);
+  logger.newline();
 
   const needsNewline = content.length > 0 && !content.endsWith("\n");
   const block = `${needsNewline ? "\n" : ""}${line}\n`;
@@ -429,7 +434,7 @@ async function runVerifyLoop(
 
     const gate = blockingGate(last);
     if (!opts.json && gate) {
-      logger.step(`Gate "${gate.label ?? gate.id}" not passed (attempt ${attempt}/${POLL_ATTEMPTS}).`);
+      logger.step(`Gate "${gate.id}" not passed (attempt ${attempt}/${POLL_ATTEMPTS}).`);
     }
 
     if (attempt < POLL_ATTEMPTS) await sleep(POLL_DELAY_MS);
@@ -438,17 +443,43 @@ async function runVerifyLoop(
   const gate = last ? blockingGate(last) : undefined;
   return {
     integration_verified: false,
-    blocker: gate?.label ?? gate?.id ?? last?.blocker ?? null,
-    next_action: gate?.next_action ?? last?.next_action ?? null,
+    blocker: gate?.id ?? last?.blocker ?? null,
+    next_action: gate?.next_action ?? null,
     readiness: last,
   };
 }
 
-/** The first failing gate (the blocker), if the readiness payload lists gates. */
-function blockingGate(r: ReadinessResult) {
-  return r.gates?.find((g) => !g.passed);
+/**
+ * The first failing gate (the blocker). The CMS readiness payload reports the
+ * id of the first failing gate at the top-level `blocker` field, and the gate
+ * verdicts under the keyed `gates` object — so resolve via `gates[blocker]`
+ * (NOT `gates.find`, which would throw: `gates` is an object, not an array).
+ * Falls back to scanning the keyed gates for the first non-`pass` status.
+ */
+export function blockingGate(
+  r: ReadinessResult,
+): { id: string; next_action?: string } | undefined {
+  const gates = r.gates;
+  if (r.blocker) {
+    return { id: r.blocker, next_action: gates?.[r.blocker]?.next_action };
+  }
+  if (gates) {
+    for (const [id, gate] of Object.entries(gates)) {
+      if (gate && gate.status !== "pass") {
+        return { id, next_action: gate.next_action };
+      }
+    }
+  }
+  return undefined;
 }
 
-function tick(v: boolean | undefined): string {
-  return v ? format.green("✓") : format.yellow("…");
+/**
+ * Render a single chain-step verdict. The CMS returns a `TestChainStatus`
+ * STRING per step — green ✓ ONLY when it is exactly `'attributed'`; an
+ * unattributed/wrong_partner step is a hard fail (✗ + status), pending is ⧗.
+ */
+export function tick(v: TestChainStatus | undefined): string {
+  if (v === "attributed") return format.green("✓");
+  if (v === "pending" || v === undefined) return format.yellow("⧗");
+  return `${format.red("✗")} ${format.dim(v)}`;
 }
