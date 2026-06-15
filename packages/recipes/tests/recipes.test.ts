@@ -125,6 +125,16 @@ describe("getRecipe — subscription renewals (#3 invoice.paid)", () => {
     expect(r.renewal!.snippet).toContain("subscription_cycle");
   });
 
+  it("renewal skips $0 invoices (100%-off / credit) — guards a non-positive amount the SDK rejects", () => {
+    const r = getRecipe("fastify", "stripe", "s2s");
+    expect(r.renewal!.snippet).toContain("invoice.amount_paid <= 0");
+  });
+
+  it("renewal subscriptionId reads the Basil parent path first, falling back to legacy", () => {
+    const r = getRecipe("fastify", "stripe", "s2s");
+    expect(r.renewal!.snippet).toContain("invoice.parent?.subscription_details?.subscription");
+  });
+
   it("stripe_connect mode → NO renewal (Connect autocaptures renewals)", () => {
     expect(getRecipe("fastify", "stripe", "stripe_connect").renewal).toBeUndefined();
   });
