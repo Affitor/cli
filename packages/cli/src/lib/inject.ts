@@ -95,3 +95,147 @@ export function injectPagesApp(content: string, importSpecifier: string): Inject
 
   return { content: injected, status: "injected", added: [importLine, `<${TRACKER_MARKER} />`] };
 }
+
+// ── Server-side: inject `affitor.trackSale(...)` into a Stripe webhook ──
+//
+// This edits PAYMENT code, so it is deliberately conservative: it only injects
+// when it can recognize a clean `checkout.session.completed` shape with a single
+// obvious session binding. Anything ambiguous → `unrecognized`, and the caller
+// PRINTS the exact patch instead of forcing an edit. The transform is pure (no
+// fs) and idempotent (a trackSale / @affitor/sdk/server marker → `already`).
+
+/** Markers that mean a trackSale call (or the server import) is already wired. */
+const TRACK_SALE_MARKER = "affitor.trackSale(";
+const SERVER_IMPORT_MARKER = "@affitor/sdk/server";
+
+/** The canonical Stripe webhook-verification call (Node SDK) we anchor on. */
+const CONSTRUCT_EVENT_NEEDLE = "stripe.webhooks.constructEvent";
+
+export interface InjectStripeOpts {
+  /**
+   * The provider sale snippet from `@affitor/recipes` (e.g.
+   * `getRecipe(framework, 'stripe', 's2s').sale!.snippet`). The SDK import line
+   * (`import { Affitor } from '@affitor/sdk/server';`) is stripped before
+   * insertion — the inserted body is just the `affitor.trackSale({...})` call,
+   * indented to match the matched session binding.
+   */
+  saleSnippet: string;
+  /**
+   * Module specifier for the `affitor` client import — e.g. `'../lib/affitor'`
+   * or `'@/lib/affitor'`. When provided and status is 'injected', the transform
+   * also adds `import { affitor } from '<importSpecifier>';` at the top of the
+   * file (idempotent: skipped if that line is already present). Included in
+   * `added[]` so the diff preview shows it.
+   */
+  importSpecifier?: string;
+  /**
+   * Optional indent override (spaces). When omitted, the indent of the matched
+   * session-binding line is reused so the inserted call lines up with its block.
+   */
+  indent?: string;
+}
+
+/** Drop the recipe's leading `@affitor/sdk/server` import + its blank line. */
+function saleCallBody(snippet: string): string {
+  return snippet
+    .replace(/^import \{ Affitor \} from '@affitor\/sdk\/server';\n+/, "")
+    .trimEnd();
+}
+
+/** Re-indent a multi-line snippet body to a given base indent. */
+function indentBody(body: string, indent: string): string {
+  return body
+    .split("\n")
+    .map((line) => (line.length ? indent + line : line))
+    .join("\n");
+}
+
+/** The import line for the affitor client given a module specifier. */
+function affitorImportLine(importSpecifier: string): string {
+  return `import { affitor } from '${importSpecifier}';`;
+}
+
+/**
+ * Insert `affitor.trackSale(...)` into a Stripe webhook handler, right after the
+ * verified `checkout.session.completed` session object is bound.
+ *
+ * CONSERVATIVE BY DESIGN — only injects when ALL of these hold (else returns
+ * `unrecognized` so the caller prints the patch instead of editing payment code):
+ *   1. The file contains `stripe.webhooks.constructEvent` (it really is a
+ *      verified Stripe webhook — we never edit an unverified handler).
+ *   2. There is a single `checkout.session.completed` reference to anchor on
+ *      (the recipe's stripe snippet reads `session.*`, so the sale belongs in
+ *      that case). Zero or multiple matches → unrecognized (ambiguous).
+ *   3. After that anchor, exactly one line binds the event object to a name we
+ *      can reuse — `const session = event.data.object …` (or `= session …`).
+ *      The trackSale call is inserted on the line after that binding, at the
+ *      binding's own indentation. No binding, or an unexpected variable name →
+ *      unrecognized.
+ *
+ * Returns `already` when a `affitor.trackSale(` / `@affitor/sdk/server` marker is
+ * already present (idempotent re-runs do nothing).
+ */
+export function injectStripeTrackSale(content: string, opts: InjectStripeOpts): InjectResult {
+  // Idempotent: never double-inject.
+  // Check for trackSale marker, server import marker, OR the affitor client import
+  // (the specifier we would add) — any of these mean the file is already wired.
+  const clientImportLine = opts.importSpecifier ? affitorImportLine(opts.importSpecifier) : null;
+  if (
+    content.includes(TRACK_SALE_MARKER) ||
+    content.includes(SERVER_IMPORT_MARKER) ||
+    (clientImportLine && content.includes(clientImportLine))
+  ) {
+    return { content, status: "already", added: [] };
+  }
+
+  // (1) Must be a verified Stripe webhook — anchor on constructEvent.
+  if (!content.includes(CONSTRUCT_EVENT_NEEDLE)) {
+    return { content, status: "unrecognized", added: [] };
+  }
+
+  // (2) Exactly one checkout.session.completed reference (the sale anchor).
+  // Zero (some other event) or many (ambiguous which case) → bail.
+  const completedRe = /checkout\.session\.completed/g;
+  const completedMatches = content.match(completedRe);
+  if (!completedMatches || completedMatches.length !== 1) {
+    return { content, status: "unrecognized", added: [] };
+  }
+  const anchorIdx = content.indexOf("checkout.session.completed");
+
+  // (3) After the anchor, find a single clean session binding to insert after.
+  // Accept `const session = event.data.object …` or `const session = session …`
+  // (cast variants). The variable MUST be named `session` — the recipe's stripe
+  // snippet reads `session.client_reference_id` / `session.amount_total` /
+  // `session.id`, so any other name would not compile.
+  const after = content.slice(anchorIdx);
+  const bindingRe = /^([ \t]*)const session\s*=\s*(?:event\.data\.object|session)\b[^\n]*$/m;
+  const bindingMatch = after.match(bindingRe);
+  if (!bindingMatch || bindingMatch.index === undefined) {
+    return { content, status: "unrecognized", added: [] };
+  }
+
+  // Absolute offset of the end of the binding line (insertion point).
+  const bindingLineStart = anchorIdx + bindingMatch.index;
+  const bindingLineEnd = bindingLineStart + bindingMatch[0].length;
+
+  const indent = opts.indent ?? bindingMatch[1] ?? "      ";
+  const body = saleCallBody(opts.saleSnippet);
+  if (!body.includes(TRACK_SALE_MARKER)) {
+    // The provided snippet isn't a trackSale call — refuse rather than guess.
+    return { content, status: "unrecognized", added: [] };
+  }
+
+  const block = indentBody(body, indent);
+  const insertion = `\n${indent}// Affitor: report the sale (auto-added by \`affitor onboard\`)\n${block}`;
+  const withSale = content.slice(0, bindingLineEnd) + insertion + content.slice(bindingLineEnd);
+
+  // Also add the affitor client import when a specifier was provided.
+  let finalContent = withSale;
+  const added = insertion.split("\n").filter((l) => l.trim().length > 0);
+  if (clientImportLine) {
+    finalContent = addImport(withSale, clientImportLine);
+    added.unshift(clientImportLine);
+  }
+
+  return { content: finalContent, status: "injected", added };
+}

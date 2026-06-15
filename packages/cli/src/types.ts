@@ -100,6 +100,47 @@ export interface TestEventResult {
   message: string;
 }
 
+/**
+ * Per-gate readiness verdict from GET /api/v1/programs/me/readiness.
+ * `integration_verified` flips true once all gates pass; `blocker`/`next_action`
+ * point at the first failing gate so the CLI can tell the user what to fix.
+ */
+export interface ReadinessGate {
+  id: string;
+  label?: string;
+  passed: boolean;
+  next_action?: string;
+}
+
+export interface ReadinessResult {
+  integration_verified: boolean;
+  gates?: ReadinessGate[];
+  blocker?: string | null;
+  next_action?: string | null;
+  [key: string]: unknown;
+}
+
+/**
+ * Result of the synthetic verification chain (POST /api/v1/cli/test-event
+ * {type:'chain'}). On a 2xx the server returns `{ data: { verdict, attributed,
+ * ... } }`. On a 429 the client returns the parsed rate-limit body instead of
+ * throwing, so the caller can read `retry_after_seconds` and back off.
+ */
+export interface VerificationVerdict {
+  click?: boolean;
+  lead?: boolean;
+  sale?: boolean;
+}
+
+export interface VerificationChainResult {
+  verdict?: VerificationVerdict;
+  attributed?: boolean;
+  rate_limited?: boolean;
+  retry_after_seconds?: number;
+  error?: { code?: string; retry_after_seconds?: number; message?: string };
+  [key: string]: unknown;
+}
+
 export interface CLIFlags {
   json: boolean;
   noInteractive: boolean;
