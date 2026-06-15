@@ -71,7 +71,31 @@ describe("getIntegrationPlan — steps shape", () => {
   it("s2s plan references the inject target in the sale step", () => {
     const plan = getIntegrationPlan({ framework: "fastify", provider: "stripe", mode: "s2s" });
     expect(plan.recipe.sale_path).toBe("webhook_sdk");
-    expect(plan.steps).toHaveLength(5);
+    expect(plan.steps).toHaveLength(6);
     expect(plan.steps[3]).toContain("fastify.post('/webhooks/stripe'");
+  });
+});
+
+describe("getRecipe — subscription renewals (#3 invoice.paid)", () => {
+  it("stripe + s2s → renewal present (invoice.paid, isRecurring, idempotent invoice id)", () => {
+    const r = getRecipe("fastify", "stripe", "s2s");
+    expect(r.renewal).toBeDefined();
+    expect(r.renewal!.snippet).toContain("case 'invoice.paid'");
+    expect(r.renewal!.snippet).toContain("isRecurring: true");
+    expect(r.renewal!.snippet).toContain("invoiceId: invoice.id");
+    expect(r.renewal!.snippet).toContain("subscription_cycle");
+  });
+
+  it("stripe_connect mode → NO renewal (Connect autocaptures renewals)", () => {
+    expect(getRecipe("fastify", "stripe", "stripe_connect").renewal).toBeUndefined();
+  });
+
+  it("non-stripe provider → NO renewal", () => {
+    expect(getRecipe("fastify", "polar", "s2s").renewal).toBeUndefined();
+  });
+
+  it("getIntegrationPlan includes a Renewals step for stripe s2s", () => {
+    const plan = getIntegrationPlan({ framework: "fastify", provider: "stripe", mode: "s2s" });
+    expect(plan.steps.some((s) => s.startsWith) && plan.steps.some((s) => /Renewals:/.test(s))).toBe(true);
   });
 });

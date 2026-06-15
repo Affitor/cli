@@ -230,7 +230,7 @@ describe('@affitor/mcp tool handlers (stubbed client)', () => {
     };
     expect(plan.recipe.sale_path).toBe('webhook_sdk');
     expect(plan.recipe.sale?.inject_target).toContain("fastify.post('/webhooks/stripe'");
-    expect(plan.steps).toHaveLength(5);
+    expect(plan.steps).toHaveLength(6);
 
     await client.close();
   });
