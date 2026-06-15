@@ -49,6 +49,14 @@ export interface Recipe {
    * (Stripe Connect records the sale server-side — inject metadata only).
    */
   sale: { snippet: string; inject_target: string } | null;
+  /**
+   * Subscription RENEWAL handling (Stripe webhook_sdk/raw_http only). The first
+   * payment fires at `checkout.session.completed` (the `sale` snippet); renewals
+   * arrive separately as `invoice.paid` and are silently MISSED without this.
+   * Printed as guidance — a different webhook event than `sale`, so it is not
+   * auto-injected. `undefined` for Connect mode (Connect autocaptures renewals).
+   */
+  renewal?: { snippet: string; inject_target: string; note: string };
   /** Self-verify step (run the synthetic chain, poll readiness). */
   verify: string;
   notes?: string;
@@ -225,6 +233,35 @@ function metadataFor(provider: Provider): { why: string; snippet: string } {
  *   - …but framework "unknown" → "raw_http" (sale present, but a raw call — no
  *     precise inject site to locate).
  */
+/**
+ * Stripe subscription-renewal handler. The first payment is `checkout.session.
+ * completed` (the `sale` snippet); every renewal arrives as `invoice.paid` with
+ * billing_reason 'subscription_cycle'. Attribution rides on the
+ * subscription_data.metadata.affitor_customer_key planted in the metadata step.
+ */
+const STRIPE_RENEWAL: { snippet: string; inject_target: string; note: string } = {
+  snippet: [
+    "case 'invoice.paid': {",
+    "  const invoice = event.data.object;",
+    "  // Only renewals — the first invoice is already counted at checkout.session.completed.",
+    "  if (invoice.billing_reason !== 'subscription_cycle') break;",
+    "  await affitor.trackSale({",
+    "    customerExternalId: invoice.subscription_details?.metadata?.affitor_customer_key,",
+    "    amount: invoice.amount_paid,            // integer cents",
+    "    invoiceId: invoice.id,                  // idempotency key — 409 = already recorded",
+    "    isRecurring: true,",
+    "    saleType: 'subscription',",
+    "    subscriptionId: typeof invoice.subscription === 'string' ? invoice.subscription : invoice.subscription?.id,",
+    "  });",
+    "  break;",
+    "}",
+  ].join("\n"),
+  inject_target:
+    "the SAME Stripe webhook handler, as a separate `case 'invoice.paid'` (renewals do NOT arrive as checkout.session.completed)",
+  note:
+    "Without this, every subscription renewal commission is silently missed. Attribution rides on subscription_data.metadata.affitor_customer_key (planted in the metadata step), surfaced on each invoice as invoice.subscription_details.metadata.",
+};
+
 export function getRecipe(framework: Framework, provider: Provider, mode: Mode): Recipe {
   let sale_path: SalePath;
   if (mode === "stripe_connect") {
@@ -237,6 +274,13 @@ export function getRecipe(framework: Framework, provider: Provider, mode: Mode):
     sale_path === "connect"
       ? null
       : { snippet: saleSnippetFor(provider), inject_target: INJECT_TARGET[framework] };
+
+  // Subscription renewals (Stripe, non-Connect): the first payment is caught at
+  // checkout.session.completed (the `sale` snippet); renewals arrive separately
+  // as invoice.paid and are missed without a second handler. Connect autocaptures
+  // renewals, so renewal is omitted there.
+  const renewal =
+    sale_path !== "connect" && provider === "stripe" ? STRIPE_RENEWAL : undefined;
 
   const notes =
     sale_path === "connect"
@@ -253,6 +297,7 @@ export function getRecipe(framework: Framework, provider: Provider, mode: Mode):
     install: INSTALL,
     metadata: metadataFor(provider),
     sale,
+    ...(renewal ? { renewal } : {}),
     verify: VERIFY,
     ...(notes ? { notes } : {}),
   };
@@ -287,6 +332,13 @@ export function getIntegrationPlan(input: {
   } else {
     steps.push(
       `${n}. Sale: none — sale_path is "connect"; Stripe Connect records the sale server-side. Do NOT inject trackSale.`,
+    );
+    n += 1;
+  }
+
+  if (recipe.renewal) {
+    steps.push(
+      `${n}. Renewals: add a separate \`case 'invoice.paid'\` to ${recipe.renewal.inject_target}. ${recipe.renewal.note}`,
     );
     n += 1;
   }
