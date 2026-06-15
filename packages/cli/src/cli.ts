@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 
+import { createRequire } from "node:module";
 import { Command } from "commander";
 import pc from "picocolors";
 import { setLoggerOptions } from "./lib/logger.js";
@@ -13,6 +14,12 @@ import { registerStatusCommand } from "./commands/status.js";
 import { registerTestCommand } from "./commands/test.js";
 import { registerProgramsCommand } from "./commands/programs.js";
 
+// Read the version from package.json at runtime so `affitor --version` never
+// drifts from the published package version (dist/cli.js → ../package.json).
+const { version } = createRequire(import.meta.url)("../package.json") as {
+  version: string;
+};
+
 const program = new Command();
 
 program
@@ -20,7 +27,7 @@ program
   .description(
     "CLI-native affiliate tracking. Connect Stripe, track commissions, manage partners.",
   )
-  .version("0.2.0")
+  .version(version)
   .option("--json", "Output as JSON (for agent parsing)", false)
   .option("--no-interactive", "Skip all prompts, fail on missing values")
   .option("--auto-confirm", "Auto-yes to all confirmation prompts", false)
