@@ -5,6 +5,8 @@ import type {
   ProgramStatus,
   ProgramSummary,
   TestEventResult,
+  ReadinessResult,
+  VerificationChainResult,
 } from "../types.js";
 import * as logger from "./logger.js";
 import { resolveApiKey } from "./config.js";
@@ -112,6 +114,79 @@ export class AffitorAPI {
       method: "POST",
       body: data,
     });
+  }
+
+  // ─── Onboarding / verification endpoints ────────────────────────
+
+  /**
+   * GET /api/v1/programs/me/readiness — the per-program 5-gate verdict
+   * (Bearer key). `integration_verified` flips true when every gate passes;
+   * the blocking gate's `next_action` tells the caller what to fix.
+   */
+  async getReadiness(opts: { apiKey?: string; apiUrl?: string } = {}): Promise<ReadinessResult> {
+    return this.request<ReadinessResult>("/api/v1/programs/me/readiness", {
+      apiKey: opts.apiKey,
+      apiUrl: opts.apiUrl,
+    });
+  }
+
+  /**
+   * POST /api/v1/cli/test-event {type:'chain'} — fire the synthetic
+   * click→lead→sale chain through the REAL attribution pipeline (isolated
+   * is_test rows). Mirrors the MCP `fireVerificationChain` contract exactly.
+   *
+   * Does NOT use the shared `request()` helper because that throws on 429. A
+   * 429 here is expected (the chain is rate-limited to 10/program/hour) and the
+   * caller must read `retry_after_seconds` and back off — so on a non-2xx this
+   * returns the parsed body (with `rate_limited` + `retry_after_seconds` merged
+   * in for 429) instead of throwing. Only a network/parse failure throws.
+   */
+  async runVerificationChain(
+    opts: { apiKey?: string; apiUrl?: string } = {},
+  ): Promise<VerificationChainResult> {
+    const apiUrl = opts.apiUrl ?? this.apiUrl;
+    const key = opts.apiKey ?? this.apiKey;
+    const url = `${apiUrl}/api/v1/cli/test-event`;
+
+    const headers: Record<string, string> = {
+      "Content-Type": "application/json",
+      "User-Agent": "affitor-cli/0.2.0",
+    };
+    if (key) headers["Authorization"] = `Bearer ${key}`;
+
+    logger.debug(`POST ${url} {type:'chain'}`);
+
+    let res: Response;
+    try {
+      res = await fetch(url, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ type: "chain" }),
+      });
+    } catch (err) {
+      throw new NetworkError((err as Error).message);
+    }
+
+    const body = (await res.json().catch(() => ({}))) as Record<string, unknown>;
+
+    if (res.ok) {
+      // Server returns { data: { verdict, attributed, ... } } or the bare object.
+      return (body.data ?? body) as VerificationChainResult;
+    }
+
+    // Non-2xx (incl. 429): DO NOT throw — surface the parsed body so the caller
+    // can read retry_after_seconds and back off. Mirror MCP fireVerificationChain.
+    const errObj = (body.error ?? {}) as { code?: string; retry_after_seconds?: number };
+    const retryHeader = res.headers.get("Retry-After");
+    const retryAfter =
+      errObj.retry_after_seconds ?? (retryHeader ? parseInt(retryHeader, 10) : undefined);
+
+    return {
+      ...(body as VerificationChainResult),
+      http_status: res.status,
+      rate_limited: res.status === 429 || errObj.code === "rate_limited",
+      ...(retryAfter !== undefined ? { retry_after_seconds: retryAfter } : {}),
+    };
   }
 
   private async request<T>(path: string, opts: RequestOptions = {}): Promise<T> {
