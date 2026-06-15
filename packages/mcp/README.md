@@ -37,13 +37,15 @@ If `AFFITOR_API_KEY` is not set, the server prints a clear message to stderr and
 
 ## Tools
 
-| Tool                   | Description                                                                                                                              |
-| ---------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
-| `affitor_readiness`    | Check this program's integration/onboarding readiness — returns a 5-gate verdict + blocker + next_action. Poll until `integration_verified` is true. |
-| `affitor_track_lead`   | Report a lead/signup. Binds the customer to the click so later sales attribute by `customerExternalId` alone.                            |
-| `affitor_track_sale`   | Report a sale. Resolves attribution by `customerExternalId` (bound at lead time).                                                        |
-| `affitor_track_refund` | Report a refund (omit amount = full → commission reversed; partial → refunded). Idempotent by `invoiceId`.                               |
-| `affitor_track_click`  | Report a click (usually browser-side; public, no customer needed).                                                                       |
+| Tool                            | Description                                                                                                                              |
+| ------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
+| `affitor_readiness`             | Check this program's integration/onboarding readiness — returns a 5-gate verdict + blocker + next_action. Poll until `integration_verified` is true. |
+| `affitor_track_lead`            | Report a lead/signup. Binds the customer to the click so later sales attribute by `customerExternalId` alone.                            |
+| `affitor_track_sale`            | Report a sale. Resolves attribution by `customerExternalId` (bound at lead time).                                                        |
+| `affitor_track_refund`          | Report a refund (omit amount = full → commission reversed; partial → refunded). Idempotent by `invoiceId`.                               |
+| `affitor_track_click`           | Report a click (usually browser-side; public, no customer needed).                                                                       |
+| `affitor_get_integration_plan`  | Return the deterministic payment-tracking integration plan for a stack — install, checkout-metadata snippet, `trackSale` snippet + where to inject it, and the verify step. **Pure** — reads the canonical [`@affitor/recipes`](https://www.npmjs.com/package/@affitor/recipes) registry; no SDK client, no network, no side-effects. The agent follows this instead of guessing a contract. |
+| `affitor_run_verification`      | Fire the synthetic click → lead → sale verification chain through Affitor's REAL attribution pipeline (isolated `is_test` rows). The agent's proof step: run it, then poll `affitor_readiness` until `integration_verified` is true. Rate-limited to **10/program/hour** — on a `rate_limited` result, wait `retry_after_seconds`, don't hammer. |
 
 ### Inputs
 
@@ -76,6 +78,14 @@ If `AFFITOR_API_KEY` is not set, the server prints a clear message to stderr and
 - `pageUrl?: string`
 - `referrerUrl?: string`
 - `existingClickId?: string`
+
+**`affitor_get_integration_plan`**
+- `framework: "next-app" | "next-pages" | "fastify" | "express" | "node" | "unknown"` — the detected app framework; determines where `trackSale` is injected.
+- `provider?: "stripe" | "polar" | "lemonsqueezy" | "paddle" | "unknown"` — the detected payment provider (default `stripe`).
+- `mode?: "stripe_connect" | "s2s"` — payment-tracking mode (default `stripe_connect`). `stripe_connect` = Connect autocaptures the sale (metadata only, no `trackSale`); `s2s` = inject `trackSale` in your webhook. Returns `{ steps, recipe }`.
+
+**`affitor_run_verification`** (no input)
+- Fires the synthetic verification chain and returns the parsed result. On a rate limit it returns `{ http_status: 429, retry_after_seconds, … }` rather than throwing — back off and retry.
 
 Each tool returns the Affitor API's JSON payload as text content. On a failed request (a thrown error or an `{ ok: false }` envelope) the tool returns an MCP error result with the message.
 

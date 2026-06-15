@@ -269,6 +269,8 @@ This project uses Affitor for affiliate/partner tracking. Affitor tracks clicks,
 
 ## Integration Instructions
 
+**Recommended: one-command integration.** Run \`npx affitor onboard\` to wire Affitor in end-to-end — it detects your framework + payment provider, installs \`@affitor/sdk\`, injects browser click tracking and the Stripe sale call, then fires a synthetic chain and polls readiness until \`integration_verified\`. It is idempotent, so it is safe to re-run. The steps below document what \`onboard\` automates (and the manual path for stacks it can't auto-wire).
+
 ### 1. Click Tracking
 
 Add this script tag to every page in \`<head>\`. It auto-detects affiliate visits via \`?aff=\` parameter and stores a first-party cookie.
@@ -356,6 +358,7 @@ Use the same internal user ID everywhere:
 ## CLI Commands
 
 \`\`\`bash
+npx affitor onboard         # Wire Affitor in end-to-end (detect→inject→verify)
 npx affitor status          # Check program health
 npx affitor setup stripe    # Auto-connect Stripe via OAuth
 npx affitor test click      # Send test click event
