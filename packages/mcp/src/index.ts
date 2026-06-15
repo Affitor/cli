@@ -78,14 +78,60 @@ async function runCall(fn: () => Promise<unknown>): Promise<CallToolResult> {
 }
 
 /**
- * Register the 6 Affitor tools on an MCP server. Exported for unit testing the
+ * Fires Affitor's synthetic verification chain and resolves to the parsed body.
+ * Injected into `registerTools` so the `affitor_run_verification` handler stays
+ * unit-testable without a real network call.
+ */
+export type RunVerification = () => Promise<unknown>;
+
+/**
+ * POST `{base}/api/v1/cli/test-event` with `{ type: 'chain' }` to fire the
+ * synthetic click→lead→sale verification chain through Affitor's REAL
+ * attribution pipeline (isolated `is_test` rows).
+ *
+ * Returns the parsed JSON body for a 2xx response. For a non-2xx (including a
+ * 429 rate-limit), returns the parsed error body with the HTTP status merged in
+ * (`{ http_status, ...body }`) so the agent can read `retry_after_seconds` and
+ * back off — it does NOT throw on 429. Throws only on a network or JSON-parse
+ * failure, which `runCall` converts into an MCP error result.
+ */
+export async function fireVerificationChain(apiKey: string, apiUrl: string): Promise<unknown> {
+  const res = await fetch(`${apiUrl}/api/v1/cli/test-event`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ type: 'chain' }),
+  });
+
+  const body = (await res.json()) as Record<string, unknown>;
+
+  if (res.ok) {
+    return body;
+  }
+
+  // Non-2xx (incl. 429): merge the HTTP status in so the agent can read
+  // retry_after_seconds and back off rather than crash.
+  return { http_status: res.status, ...body };
+}
+
+/**
+ * Register the 7 Affitor tools on an MCP server. Exported for unit testing the
  * handlers with a stubbed `Affitor` client.
  *
  * Five tools wrap the `Affitor` client (readiness + track*). The sixth,
  * `affitor_get_integration_plan`, is PURE — it reads the canonical recipe
  * registry (`@affitor/recipes`) and never touches the client or the network.
+ * The seventh, `affitor_run_verification`, fires the synthetic verification
+ * chain via the injected `runVerification` (omitted → the tool degrades to a
+ * "not configured" failure).
  */
-export function registerTools(server: McpServer, affitor: AffitorLike): void {
+export function registerTools(
+  server: McpServer,
+  affitor: AffitorLike,
+  runVerification?: RunVerification,
+): void {
   server.registerTool(
     'affitor_readiness',
     {
@@ -255,6 +301,21 @@ export function registerTools(server: McpServer, affitor: AffitorLike): void {
       return ok(plan);
     },
   );
+
+  server.registerTool(
+    'affitor_run_verification',
+    {
+      description:
+        "Fire the synthetic click->lead->sale verification chain through Affitor's REAL attribution pipeline (isolated is_test rows). This is the agent's PROOF step: run it, then poll affitor_readiness until integration_verified:true. Rate-limited to 10/program/hour — on a rate_limited result, wait retry_after_seconds, don't hammer.",
+      inputSchema: {},
+    },
+    async () => {
+      if (!runVerification) {
+        return fail('affitor_run_verification is not configured in this MCP build');
+      }
+      return runCall(() => runVerification());
+    },
+  );
 }
 
 /** Read the server version from this package's package.json at runtime. */
@@ -284,8 +345,13 @@ async function main(): Promise<void> {
   const apiUrl = process.env.AFFITOR_API_URL;
   const affitor = new Affitor({ apiKey, ...(apiUrl ? { apiUrl } : {}) });
 
+  // Chain-firing isn't exposed by the SDK client (its `post` is private), so we
+  // fire the endpoint via a small authenticated fetch — injected for testability.
+  const runVerification: RunVerification = () =>
+    fireVerificationChain(apiKey, apiUrl ?? 'https://api.affitor.com');
+
   const server = new McpServer({ name: 'affitor', version: SERVER_VERSION });
-  registerTools(server, affitor);
+  registerTools(server, affitor, runVerification);
 
   const transport = new StdioServerTransport();
   await server.connect(transport);

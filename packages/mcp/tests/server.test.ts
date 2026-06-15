@@ -18,6 +18,7 @@ const EXPECTED_TOOLS = [
   'affitor_track_refund',
   'affitor_track_click',
   'affitor_get_integration_plan',
+  'affitor_run_verification',
 ] as const;
 
 // ── 1. Integration: spawn the BUILT server over stdio, drive with MCP Client ──
@@ -45,7 +46,7 @@ describe('@affitor/mcp stdio server (spawned, built dist)', () => {
     expect(info?.name).toBe('affitor');
   });
 
-  it('tools/list returns the 6 tools with input schemas', async () => {
+  it('tools/list returns the 7 tools with input schemas', async () => {
     const { tools } = await client.listTools();
     const names = tools.map((t) => t.name).sort();
     expect(names).toEqual([...EXPECTED_TOOLS].sort());
@@ -230,6 +231,59 @@ describe('@affitor/mcp tool handlers (stubbed client)', () => {
     expect(plan.recipe.sale_path).toBe('webhook_sdk');
     expect(plan.recipe.sale?.inject_target).toContain("fastify.post('/webhooks/stripe'");
     expect(plan.steps).toHaveLength(5);
+
+    await client.close();
+  });
+
+  it('affitor_run_verification returns the injected runVerification payload (no network)', async () => {
+    const stub: AffitorLike = {
+      readiness: async () => ({}) as never,
+      trackLead: async () => ({ ok: true, status: 200, data: null }),
+      trackSale: async () => ({ ok: true, status: 200, data: null }),
+      trackRefund: async () => ({ ok: true, status: 200, data: null }),
+      trackClick: async () => ({ ok: true, status: 200, data: null }),
+    };
+    const payload = {
+      data: {
+        type: 'chain',
+        verdict: { click: 'attributed', lead: 'attributed', sale: 'attributed' },
+        attributed: true,
+      },
+    };
+
+    const server = new McpServer({ name: 'affitor', version: '0.1.0' });
+    registerTools(server, stub, async () => payload);
+    const [ct, st] = InMemoryTransport.createLinkedPair();
+    const client = new Client({ name: 'test', version: '0.0.0' });
+    await Promise.all([server.connect(st), client.connect(ct)]);
+
+    const res = await client.callTool({ name: 'affitor_run_verification', arguments: {} });
+    expect(res.isError).toBeFalsy();
+    const text = (res.content as { type: string; text: string }[])[0].text;
+    expect(JSON.parse(text)).toEqual(payload);
+
+    await client.close();
+  });
+
+  it('affitor_run_verification degrades to a not-configured failure when runVerification is absent', async () => {
+    const stub: AffitorLike = {
+      readiness: async () => ({}) as never,
+      trackLead: async () => ({ ok: true, status: 200, data: null }),
+      trackSale: async () => ({ ok: true, status: 200, data: null }),
+      trackRefund: async () => ({ ok: true, status: 200, data: null }),
+      trackClick: async () => ({ ok: true, status: 200, data: null }),
+    };
+
+    const server = new McpServer({ name: 'affitor', version: '0.1.0' });
+    registerTools(server, stub);
+    const [ct, st] = InMemoryTransport.createLinkedPair();
+    const client = new Client({ name: 'test', version: '0.0.0' });
+    await Promise.all([server.connect(st), client.connect(ct)]);
+
+    const res = await client.callTool({ name: 'affitor_run_verification', arguments: {} });
+    expect(res.isError).toBe(true);
+    const text = (res.content as { type: string; text: string }[])[0].text;
+    expect(text).toBe('affitor_run_verification is not configured in this MCP build');
 
     await client.close();
   });
