@@ -24,18 +24,36 @@ afterEach(() => {
 });
 
 describe("AffitorAPI.getReadiness", () => {
-  it("returns the readiness verdict on 200", async () => {
+  it("returns the readiness verdict on 200 (gates = keyed object, blocker = first failing id)", async () => {
+    // CANONICAL CMS contract: `gates` is a KEYED OBJECT (not an array), each gate
+    // has a tri-state `status`, and `blocker` names the FIRST failing gate id.
     stubFetch(200, {
       data: {
         integration_verified: false,
-        gates: [{ id: "click", passed: true }, { id: "sale", passed: false, next_action: "Send a sale" }],
-        next_action: "Send a sale",
+        state: "wiring",
+        gates: {
+          profile: { status: "pass" },
+          economics: { status: "pass" },
+          payout: { status: "pass", mode: "s2s" },
+          tracking: { status: "pass", checked_at: "2026-06-14T00:00:00Z" },
+          live: {
+            status: "fail",
+            next_action: "Send a sale",
+            test_chain: { click: "attributed", lead: "attributed", sale: "pending" },
+          },
+        },
+        blocker: "live",
+        poll: { retry_after_seconds: 2 },
       },
     });
     const r = await api.getReadiness();
     expect(r.integration_verified).toBe(false);
-    expect(r.gates).toHaveLength(2);
-    expect(r.next_action).toBe("Send a sale");
+    expect(Array.isArray(r.gates)).toBe(false);
+    expect(r.gates?.live?.status).toBe("fail");
+    expect(r.gates?.payout?.mode).toBe("s2s");
+    expect(r.blocker).toBe("live");
+    // The blocking gate's next_action is read via gates[blocker].
+    expect(r.gates?.[r.blocker!]?.next_action).toBe("Send a sale");
   });
 
   it("unwraps a bare (non-data-wrapped) body too", async () => {
@@ -51,11 +69,22 @@ describe("AffitorAPI.getReadiness", () => {
 });
 
 describe("AffitorAPI.runVerificationChain", () => {
-  it("returns the verdict from a 2xx { data } envelope", async () => {
-    stubFetch(200, { data: { verdict: { click: true, lead: true, sale: true }, attributed: true } });
+  it("returns the verdict from a 2xx { data } envelope (verdict values are TestChainStatus strings)", async () => {
+    // CANONICAL CMS contract: each verdict value is a TestChainStatus STRING, and
+    // attributed === (sale === 'attributed').
+    stubFetch(200, {
+      data: {
+        type: "chain",
+        short_code: "abc123",
+        customer_key: "test_cust",
+        verdict: { click: "attributed", lead: "attributed", sale: "attributed" },
+        attributed: true,
+      },
+    });
     const r = await api.runVerificationChain();
-    expect(r.verdict).toEqual({ click: true, lead: true, sale: true });
+    expect(r.verdict).toEqual({ click: "attributed", lead: "attributed", sale: "attributed" });
     expect(r.attributed).toBe(true);
+    expect(r.short_code).toBe("abc123");
     expect(r.rate_limited).toBeUndefined();
   });
 

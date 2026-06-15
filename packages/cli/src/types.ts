@@ -101,38 +101,71 @@ export interface TestEventResult {
 }
 
 /**
- * Per-gate readiness verdict from GET /api/v1/programs/me/readiness.
- * `integration_verified` flips true once all gates pass; `blocker`/`next_action`
- * point at the first failing gate so the CLI can tell the user what to fix.
+ * Per-step status of the synthetic click→lead→sale chain, as returned by the CMS
+ * (`TestChainStatus`). A step is "passing" ONLY when it equals `'attributed'`;
+ * every other value (`unattributed`/`wrong_partner`/`pending`) is a failure or
+ * not-yet-resolved state and must NOT be rendered as success.
+ */
+export type TestChainStatus = "attributed" | "unattributed" | "wrong_partner" | "pending";
+
+/** The keyed gate id set returned by readiness (the CMS `ReadinessResult.gates`). */
+export type ReadinessGateId = "profile" | "economics" | "payout" | "tracking" | "live";
+
+/** The mode the payout gate reports. */
+export type PayoutMode = "stripe" | "s2s" | "manual";
+
+/**
+ * A single readiness gate verdict from GET /api/v1/programs/me/readiness.
+ * `status` is the tri-state the CMS returns; `next_action` (when present) tells
+ * the caller what to fix to move the gate to `'pass'`.
  */
 export interface ReadinessGate {
-  id: string;
-  label?: string;
-  passed: boolean;
+  status: "pass" | "fail" | "unknown";
   next_action?: string;
+  /** payout gate only. */
+  mode?: PayoutMode;
+  endpoint?: string;
+  /** tracking gate only. */
+  detail?: string;
+  checked_at?: string;
+  /** live gate only — per-step verdict of the last synthetic chain. */
+  test_chain?: { click: TestChainStatus; lead: TestChainStatus; sale: TestChainStatus };
 }
 
+/**
+ * GET /api/v1/programs/me/readiness verdict. `gates` is a KEYED OBJECT (NOT an
+ * array): each gate has a tri-state `status`. `integration_verified` flips true
+ * once every gate passes; `blocker` is the id of the FIRST failing gate (or
+ * `null`), so the CLI reads `gates[blocker].next_action` to tell the user what
+ * to fix. Mirrors the CMS `ReadinessResult` shape exactly.
+ */
 export interface ReadinessResult {
   integration_verified: boolean;
-  gates?: ReadinessGate[];
-  blocker?: string | null;
-  next_action?: string | null;
+  state?: string;
+  gates?: Partial<Record<ReadinessGateId, ReadinessGate>>;
+  blocker?: ReadinessGateId | null;
+  poll?: { retry_after_seconds: number };
   [key: string]: unknown;
 }
 
 /**
  * Result of the synthetic verification chain (POST /api/v1/cli/test-event
- * {type:'chain'}). On a 2xx the server returns `{ data: { verdict, attributed,
- * ... } }`. On a 429 the client returns the parsed rate-limit body instead of
- * throwing, so the caller can read `retry_after_seconds` and back off.
+ * {type:'chain'}). On a 2xx the server returns `{ data: { type:'chain',
+ * short_code, customer_key, verdict, attributed } }`. Each verdict value is a
+ * `TestChainStatus` STRING (not a boolean); `attributed === (verdict.sale ===
+ * 'attributed')`. On a 429 the client returns the parsed rate-limit body instead
+ * of throwing, so the caller can read `retry_after_seconds` and back off.
  */
 export interface VerificationVerdict {
-  click?: boolean;
-  lead?: boolean;
-  sale?: boolean;
+  click?: TestChainStatus;
+  lead?: TestChainStatus;
+  sale?: TestChainStatus;
 }
 
 export interface VerificationChainResult {
+  type?: "chain";
+  short_code?: string;
+  customer_key?: string;
   verdict?: VerificationVerdict;
   attributed?: boolean;
   rate_limited?: boolean;

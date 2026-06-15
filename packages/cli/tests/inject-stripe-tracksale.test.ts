@@ -51,8 +51,24 @@ describe("injectStripeTrackSale — injected (clean shape)", () => {
     expect(bindingIdx).toBeLessThan(saleIdx);
     expect(saleIdx).toBeLessThan(fulfillIdx);
 
-    // The inserted call matches the session binding's indentation (6 spaces).
-    expect(r.content).toMatch(/\n {6}await affitor\.trackSale\(\{/);
+    // The sale snippet is wrapped in a `$0/null` guard (M1): the `if` lands at the
+    // session binding's indentation (6 spaces); the guarded trackSale sits one
+    // level deeper (8 spaces).
+    expect(r.content).toMatch(/\n {6}if \(session\.amount_total && session\.amount_total > 0\) \{/);
+    expect(r.content).toMatch(/\n {8}await affitor\.trackSale\(\{/);
+  });
+
+  it("reads the customer key the metadata step writes (B1: affitor_customer_key, not client_reference_id)", () => {
+    // The Stripe sale snippet must read session.metadata.affitor_customer_key —
+    // the SAME key the checkout-metadata step plants — or first-payment
+    // attribution is lost on the s2s/raw_http path.
+    const r = injectStripeTrackSale(CLEAN_FASTIFY, { saleSnippet: SALE_SNIPPET });
+    expect(r.status).toBe("injected");
+    expect(r.content).toContain(
+      "customerExternalId: session.metadata?.affitor_customer_key ?? session.client_reference_id",
+    );
+    // It must NOT read client_reference_id alone (the old, broken contract).
+    expect(r.content).not.toMatch(/customerExternalId:\s*session\.client_reference_id,/);
   });
 
   it("adds the affitor import line to content and added[] when importSpecifier is given", () => {
@@ -87,7 +103,59 @@ describe("injectStripeTrackSale — injected (clean shape)", () => {
   it("respects an explicit indent override", () => {
     const r = injectStripeTrackSale(CLEAN_FASTIFY, { saleSnippet: SALE_SNIPPET, indent: "" });
     expect(r.status).toBe("injected");
-    expect(r.content).toMatch(/\nawait affitor\.trackSale\(\{/);
+    // indent "" → the guard `if` sits at column 0; the guarded trackSale at 2 spaces.
+    expect(r.content).toMatch(/\nif \(session\.amount_total && session\.amount_total > 0\) \{/);
+    expect(r.content).toMatch(/\n {2}await affitor\.trackSale\(\{/);
+  });
+});
+
+describe("injectStripeTrackSale — addImport places the import AFTER a multi-line last import (M3)", () => {
+  // A clean webhook whose LAST import is a MULTI-LINE destructured import. The old
+  // line-anchored regex spliced the new import INSIDE the destructure (between
+  // `import {` and the names) → non-compiling. The fix anchors on the LAST
+  // complete `from '...';`-terminated statement.
+  const MULTILINE_LAST_IMPORT = `import Stripe from 'stripe';
+import {
+  json,
+  type Request,
+  type Response,
+} from 'express';
+
+const stripe = new Stripe(process.env.STRIPE_KEY!);
+
+app.post('/webhooks/stripe', express.raw({ type: 'application/json' }), (req, res) => {
+  const event = stripe.webhooks.constructEvent(req.body, req.headers['stripe-signature'], secret);
+  switch (event.type) {
+    case 'checkout.session.completed': {
+      const session = event.data.object;
+      await fulfill(session);
+      break;
+    }
+  }
+  res.json({ received: true });
+});
+`;
+
+  it("inserts the affitor import AFTER the closing `} from 'express';`, never inside the destructure", () => {
+    const r = injectStripeTrackSale(MULTILINE_LAST_IMPORT, {
+      saleSnippet: SALE_SNIPPET,
+      importSpecifier: IMPORT_SPECIFIER,
+    });
+    expect(r.status).toBe("injected");
+
+    // The new import lands AFTER the multi-line import's terminating `} from 'express';`.
+    const expressEnd = r.content.indexOf("} from 'express';") + "} from 'express';".length;
+    const affitorImportIdx = r.content.indexOf(IMPORT_LINE);
+    expect(affitorImportIdx).toBeGreaterThan(expressEnd);
+
+    // The destructured import block is left intact (the new import was NOT spliced
+    // between `import {` and the destructured names — that would corrupt it).
+    expect(r.content).toContain("import {\n  json,\n  type Request,\n  type Response,\n} from 'express';");
+    // Exactly one occurrence of the affitor import line.
+    const importCount = (
+      r.content.match(new RegExp(IMPORT_LINE.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "g")) ?? []
+    ).length;
+    expect(importCount).toBe(1);
   });
 });
 

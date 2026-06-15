@@ -41,10 +41,20 @@ function importLineFor(importSpecifier: string): string {
   return `import { ${TRACKER_MARKER} } from '${importSpecifier}';`;
 }
 
-/** Add an import after the last existing top-level import (or at the very top). */
+/**
+ * Add an import after the last existing top-level import (or at the very top).
+ *
+ * Matches COMPLETE import statements — including multi-line destructured imports
+ * (`import {\n  a,\n  b\n} from 'x';`) — so the new line lands AFTER the last
+ * import, never spliced inside a destructure. An `import` starting at column 0
+ * runs to its terminating `from '...'` / `from "..."` clause (or, for a
+ * side-effect import, the bare `import '...'`), spanning newlines as needed.
+ */
 function addImport(content: string, importLine: string): string {
   if (content.includes(importLine)) return content;
-  const importRe = /^import .*$/gm;
+  // ^import … from '…'|"…"  (multi-line tolerant), OR a side-effect import '…'.
+  const importRe =
+    /^import\b[\s\S]*?from\s+(['"])[^'"]*\1\s*;?|^import\s+(['"])[^'"]*\2\s*;?/gm;
   let lastEnd = -1;
   let m: RegExpExecArray | null;
   while ((m = importRe.exec(content)) !== null) {

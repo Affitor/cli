@@ -183,11 +183,17 @@ const SALE_SNIPPET_BODY: Record<Provider, string> = {
     "});",
   ].join("\n"),
   stripe: [
-    "await affitor.trackSale({",
-    "  customerExternalId: session.client_reference_id,",
-    "  amount: session.amount_total,      // cents",
-    "  invoiceId: session.id,",
-    "});",
+    "// Skip $0 / setup-mode sessions (free trials, $0 invoices) — the SDK rejects",
+    "// a non-positive amount, and there's no revenue to attribute yet.",
+    "if (session.amount_total && session.amount_total > 0) {",
+    "  await affitor.trackSale({",
+    "    // Reads the SAME key the metadata step writes (session.metadata.affitor_customer_key);",
+    "    // client_reference_id is only a fallback for brands that set it explicitly.",
+    "    customerExternalId: session.metadata?.affitor_customer_key ?? session.client_reference_id,",
+    "    amount: session.amount_total,      // cents",
+    "    invoiceId: session.id,",
+    "  });",
+    "}",
   ].join("\n"),
   unknown: [
     "await affitor.trackSale({",
@@ -246,7 +252,10 @@ const STRIPE_RENEWAL: { snippet: string; inject_target: string; note: string } =
     "  // Only renewals — the first invoice is already counted at checkout.session.completed.",
     "  if (invoice.billing_reason !== 'subscription_cycle') break;",
     "  await affitor.trackSale({",
-    "    customerExternalId: invoice.subscription_details?.metadata?.affitor_customer_key,",
+    "    // Stripe Basil (2025-03-31+) moved subscription_details under invoice.parent;",
+    "    // read the Basil path first, fall back to the legacy top-level for pre-Basil accounts.",
+    "    customerExternalId: invoice.parent?.subscription_details?.metadata?.affitor_customer_key",
+    "      ?? invoice.subscription_details?.metadata?.affitor_customer_key,",
     "    amount: invoice.amount_paid,            // integer cents",
     "    invoiceId: invoice.id,                  // idempotency key — 409 = already recorded",
     "    isRecurring: true,",
@@ -259,7 +268,7 @@ const STRIPE_RENEWAL: { snippet: string; inject_target: string; note: string } =
   inject_target:
     "the SAME Stripe webhook handler, as a separate `case 'invoice.paid'` (renewals do NOT arrive as checkout.session.completed)",
   note:
-    "Without this, every subscription renewal commission is silently missed. Attribution rides on subscription_data.metadata.affitor_customer_key (planted in the metadata step), surfaced on each invoice as invoice.subscription_details.metadata.",
+    "Without this, every subscription renewal commission is silently missed. Attribution rides on subscription_data.metadata.affitor_customer_key (planted in the metadata step). API-version nuance: Stripe Basil (2025-03-31+) surfaces it as invoice.parent.subscription_details.metadata; pre-Basil accounts use the legacy invoice.subscription_details.metadata — the snippet reads the Basil path first and falls back.",
 };
 
 export function getRecipe(framework: Framework, provider: Provider, mode: Mode): Recipe {

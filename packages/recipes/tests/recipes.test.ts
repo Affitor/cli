@@ -76,6 +76,45 @@ describe("getIntegrationPlan — steps shape", () => {
   });
 });
 
+describe("getRecipe — Stripe sale snippet reads the key the metadata writes (B1)", () => {
+  it("the sale snippet reads session.metadata.affitor_customer_key — the SAME key the metadata step plants", () => {
+    const r = getRecipe("fastify", "stripe", "s2s");
+    expect(r.sale).not.toBeNull();
+    const sale = r.sale!.snippet;
+    // The metadata step writes affitor_customer_key into session.metadata.
+    expect(r.metadata.snippet).toContain("affitor_customer_key: user.id");
+    // The sale step must READ that same key (with client_reference_id only as a fallback).
+    expect(sale).toContain(
+      "customerExternalId: session.metadata?.affitor_customer_key ?? session.client_reference_id",
+    );
+    // It must NOT read client_reference_id alone (the old, attribution-losing contract).
+    expect(sale).not.toMatch(/customerExternalId:\s*session\.client_reference_id,/);
+  });
+
+  it("guards against $0 / setup-mode sessions (M1) so the SDK never throws on a non-positive amount", () => {
+    const sale = getRecipe("fastify", "stripe", "s2s").sale!.snippet;
+    expect(sale).toContain("if (session.amount_total && session.amount_total > 0)");
+    // The trackSale call lives inside the guard.
+    const guardIdx = sale.indexOf("if (session.amount_total");
+    const callIdx = sale.indexOf("await affitor.trackSale(");
+    expect(guardIdx).toBeLessThan(callIdx);
+  });
+});
+
+describe("getRecipe — Stripe renewal reads Basil + legacy metadata (M2)", () => {
+  it("renewal reads invoice.parent.subscription_details first, falling back to the legacy path", () => {
+    const r = getRecipe("fastify", "stripe", "s2s");
+    expect(r.renewal).toBeDefined();
+    const snippet = r.renewal!.snippet;
+    // Basil (2025-03-31+) path first.
+    expect(snippet).toContain("invoice.parent?.subscription_details?.metadata?.affitor_customer_key");
+    // Legacy fallback for pre-Basil accounts.
+    expect(snippet).toContain("invoice.subscription_details?.metadata?.affitor_customer_key");
+    // The note documents the API-version nuance.
+    expect(r.renewal!.note).toContain("Basil");
+  });
+});
+
 describe("getRecipe — subscription renewals (#3 invoice.paid)", () => {
   it("stripe + s2s → renewal present (invoice.paid, isRecurring, idempotent invoice id)", () => {
     const r = getRecipe("fastify", "stripe", "s2s");
