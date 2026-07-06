@@ -107,13 +107,19 @@ const PROVIDER_METADATA: Record<Exclude<Provider, "stripe">, { why: string; snip
   polar: {
     why:
       "Plant attribution on the Polar checkout/order so the webhook (order.paid) " +
-      "can resolve the customer. Pass your user id as order metadata at checkout creation.",
+      "can resolve the customer. Pass your user id as order metadata at checkout " +
+      "creation — or, with zero server code, carry the click id on the checkout LINK: " +
+      "Polar copies a `?reference_id=` query param into order.metadata.reference_id " +
+      "on every order, renewals included.",
     snippet: [
-      "// When creating the Polar checkout, attach your user id + click id as metadata:",
+      "// When creating the Polar checkout server-side, attach metadata:",
       "metadata: {",
       "  affitor_click_id: affitorClickId,   // from the `affitor_click_id` cookie",
       "  user_id: user.id,                   // resolved back as order.metadata.user_id",
       "}",
+      "// OR (checkout links, no server code): append the cookie value to the link —",
+      "//   /checkout?products=<id>&reference_id=<affitor_click_id>",
+      "// Polar propagates it to order.metadata.reference_id (and to subscription renewals).",
     ].join("\n"),
   },
   lemonsqueezy: {
@@ -160,12 +166,24 @@ const SDK_IMPORT = "import { Affitor } from '@affitor/sdk/server';";
  * registry is the canonical home; the CLI now sources its `sale` from here.
  */
 const SALE_SNIPPET_BODY: Record<Provider, string> = {
+  // Field names are the TypeScript SDK's camelCase: the @polar-sh/nextjs
+  // Webhooks() helper and @polar-sh/sdk validateEvent both parse the raw
+  // snake_case webhook JSON into typed camelCase objects (order.totalAmount,
+  // not order.total_amount). Amounts are already integer cents.
+  // `order` is the verified payload's data (e.g. `payload.data` in onOrderPaid).
   polar: [
     "await affitor.trackSale({",
-    "  customerExternalId: order.metadata.user_id ?? order.customer_id,",
-    "  amount: order.total_amount,        // integer cents",
-    "  invoiceId: order.id,",
-    "  saleType: order.subscription_id ? 'subscription' : 'payment',",
+    "  // user_id metadata is planted at checkout creation; customerId is Polar's fallback.",
+    "  customerExternalId: (order.metadata?.user_id as string | undefined) ?? order.customerId,",
+    "  // reference_id = the zero-server-code checkout-link carrier (?reference_id=<click id>).",
+    "  clickId: (order.metadata?.affitor_click_id ?? order.metadata?.reference_id) as string | undefined,",
+    "  amount: order.totalAmount,         // integer cents",
+    "  currency: order.currency,",
+    "  invoiceId: order.id,               // idempotency key — 409 = already recorded",
+    "  saleType: order.subscriptionId ? 'subscription' : 'payment',",
+    "  // Renewals also arrive as order.paid (metadata propagates) — same handler covers them.",
+    "  isRecurring: Boolean(order.subscriptionId),",
+    "  subscriptionId: order.subscriptionId ?? undefined,",
     "});",
   ].join("\n"),
   lemonsqueezy: [
@@ -314,6 +332,119 @@ export function getRecipe(framework: Framework, provider: Provider, mode: Mode):
     ...(renewal ? { renewal } : {}),
     verify: VERIFY,
     ...(notes ? { notes } : {}),
+  };
+}
+
+// ─── Self-hosted webhook glue routes ─────────────────────────────────
+//
+// For providers WITHOUT an Affitor-hosted relay (Polar today), the advertiser
+// hosts a small webhook route that validates the provider's signature and
+// reports the sale/refund to Affitor. `getWebhookRoute` returns that file,
+// generated from the SAME snippet constants as the printed recipes, so the
+// contract can never drift between `setup polar`, `onboard`, MCP and docs.
+
+/** The Polar webhook events Affitor tracking needs. */
+export const POLAR_WEBHOOK_EVENTS = ["order.paid", "order.refunded"] as const;
+
+export interface WebhookRouteEnvVar {
+  name: string;
+  why: string;
+}
+
+export interface WebhookRoute {
+  provider: Provider;
+  framework: Framework;
+  /**
+   * Project-relative file path (App Router path; callers living under `src/`
+   * prefix it themselves — the CLI does).
+   */
+  path: string;
+  /** Full file source, ready to write as a NEW file. */
+  source: string;
+  /** Packages the route imports. */
+  deps: string[];
+  /** Env vars the route reads (set in the app's .env, never committed). */
+  env: WebhookRouteEnvVar[];
+  /** Provider webhook events the endpoint must subscribe to. */
+  events: string[];
+}
+
+/** Polar × Next.js App Router glue route (the only generated shape today). */
+function polarNextAppRoute(): string {
+  // The sale body is the canonical SALE_SNIPPET_BODY.polar, indented into the
+  // onOrderPaid callback where `order` is bound from the verified payload.
+  const saleBody = SALE_SNIPPET_BODY.polar
+    .split("\n")
+    .map((l) => (l.length ? `    ${l}` : l))
+    .join("\n");
+
+  return [
+    "import { Webhooks } from '@polar-sh/nextjs';",
+    "import { Affitor } from '@affitor/sdk/server';",
+    "",
+    "/**",
+    " * Polar → Affitor webhook glue — generated by `affitor setup polar`.",
+    " *",
+    " * The Webhooks() helper validates the Standard-Webhooks signature with",
+    " * POLAR_WEBHOOK_SECRET before any callback runs, and parses the payload",
+    " * into the SDK's typed camelCase objects. Renewals need nothing extra:",
+    " * Polar fires order.paid every billing cycle and checkout metadata",
+    " * (incl. a checkout link's ?reference_id=) propagates to those orders.",
+    " */",
+    "const affitor = new Affitor({ apiKey: process.env.AFFITOR_API_KEY ?? '' });",
+    "",
+    "export const POST = Webhooks({",
+    "  webhookSecret: process.env.POLAR_WEBHOOK_SECRET!,",
+    "  onOrderPaid: async (payload) => {",
+    "    const order = payload.data;",
+    "    // Skip $0 orders (free tiers, 100%-off) — no revenue to attribute.",
+    "    if (!order.totalAmount || order.totalAmount <= 0) return;",
+    "    // Report the sale. trackSale resolves an {ok} envelope (it does not",
+    "    // throw on API errors) — never fail the payment webhook over tracking.",
+    saleBody.replace(/^\s{4}await affitor\.trackSale\(\{/m, "    const res = await affitor.trackSale({"),
+    "    if (!res.ok && res.status !== 409) {",
+    "      // 409 = duplicate invoiceId (webhook redelivery) — already recorded.",
+    "      console.error('[affitor] trackSale failed', res.status, res.error);",
+    "    }",
+    "  },",
+    "  onOrderRefunded: async (payload) => {",
+    "    const order = payload.data;",
+    "    // Full refund → Affitor reverses the commission (idempotent by invoiceId).",
+    "    const res = await affitor.trackRefund({ invoiceId: order.id });",
+    "    if (!res.ok) {",
+    "      console.error('[affitor] trackRefund failed', res.status, res.error);",
+    "    }",
+    "  },",
+    "});",
+    "",
+  ].join("\n");
+}
+
+/**
+ * The self-hosted webhook glue route for a stack, or null when no generated
+ * shape exists (caller falls back to the printed recipe). Polar × next-app
+ * only today — the Ship Kit / `affitor setup polar` target.
+ */
+export function getWebhookRoute(framework: Framework, provider: Provider): WebhookRoute | null {
+  if (provider !== "polar" || framework !== "next-app") return null;
+
+  return {
+    provider,
+    framework,
+    path: "app/api/polar/webhook/route.ts",
+    source: polarNextAppRoute(),
+    deps: ["@polar-sh/nextjs", "@affitor/sdk"],
+    env: [
+      {
+        name: "POLAR_WEBHOOK_SECRET",
+        why: "Signing secret returned when the webhook endpoint is created — validates every delivery.",
+      },
+      {
+        name: "AFFITOR_API_KEY",
+        why: "Program API key (server-only) — authenticates trackSale/trackRefund.",
+      },
+    ],
+    events: [...POLAR_WEBHOOK_EVENTS],
   };
 }
 
