@@ -169,8 +169,9 @@ describe("getRecipe — Polar sale snippet (SDK-parsed camelCase contract)", () 
     expect(sale).not.toContain("customer_id");
   });
 
-  it("resolves the customer from the planted metadata, falling back to Polar's customerId", () => {
+  it("resolves the customer: planted metadata → customer.externalId → Polar's customerId", () => {
     expect(sale).toContain("order.metadata?.user_id");
+    expect(sale).toContain("order.customer?.externalId");
     expect(sale).toContain("?? order.customerId");
   });
 
@@ -179,9 +180,11 @@ describe("getRecipe — Polar sale snippet (SDK-parsed camelCase contract)", () 
     expect(sale).toContain("order.metadata?.reference_id");
   });
 
-  it("marks subscription orders as recurring with the subscription id (renewals ride order.paid)", () => {
+  it("marks renewals precisely via billingReason (renewals ride order.paid)", () => {
     expect(sale).toContain("saleType: order.subscriptionId ? 'subscription' : 'payment'");
-    expect(sale).toContain("isRecurring: Boolean(order.subscriptionId)");
+    // billing_reason enum (openapi): purchase | subscription_create |
+    // subscription_cycle | subscription_update — only _cycle is a renewal.
+    expect(sale).toContain("isRecurring: order.billingReason === 'subscription_cycle'");
     expect(sale).toContain("invoiceId: order.id");
   });
 

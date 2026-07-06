@@ -173,8 +173,10 @@ const SALE_SNIPPET_BODY: Record<Provider, string> = {
   // `order` is the verified payload's data (e.g. `payload.data` in onOrderPaid).
   polar: [
     "await affitor.trackSale({",
-    "  // user_id metadata is planted at checkout creation; customerId is Polar's fallback.",
-    "  customerExternalId: (order.metadata?.user_id as string | undefined) ?? order.customerId,",
+    "  // user_id metadata is planted at checkout creation; customer.externalId is",
+    "  // YOUR user id if you pass customerExternalId at checkout; customerId is Polar's id.",
+    "  customerExternalId: (order.metadata?.user_id as string | undefined)",
+    "    ?? order.customer?.externalId ?? order.customerId,",
     "  // reference_id = the zero-server-code checkout-link carrier (?reference_id=<click id>).",
     "  clickId: (order.metadata?.affitor_click_id ?? order.metadata?.reference_id) as string | undefined,",
     "  amount: order.totalAmount,         // integer cents",
@@ -182,7 +184,7 @@ const SALE_SNIPPET_BODY: Record<Provider, string> = {
     "  invoiceId: order.id,               // idempotency key — 409 = already recorded",
     "  saleType: order.subscriptionId ? 'subscription' : 'payment',",
     "  // Renewals also arrive as order.paid (metadata propagates) — same handler covers them.",
-    "  isRecurring: Boolean(order.subscriptionId),",
+    "  isRecurring: order.billingReason === 'subscription_cycle',",
     "  subscriptionId: order.subscriptionId ?? undefined,",
     "});",
   ].join("\n"),
