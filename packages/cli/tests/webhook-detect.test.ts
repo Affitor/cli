@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { detectStripeWebhook } from "../src/lib/webhook-detect";
+import { detectPolarWebhook, detectStripeWebhook } from "../src/lib/webhook-detect";
 
 const dirs: string[] = [];
 
@@ -92,5 +92,67 @@ describe("detectStripeWebhook", () => {
       "data.json": JSON.stringify({ note: "stripe.webhooks.constructEvent" }),
     });
     expect(detectStripeWebhook(dir, "node")).toBeNull();
+  });
+});
+
+// A @polar-sh/nextjs helper route — the shape onboard can auto-edit.
+const POLAR_HELPER_ROUTE = `import { Webhooks } from '@polar-sh/nextjs';
+
+export const POST = Webhooks({
+  webhookSecret: process.env.POLAR_WEBHOOK_SECRET!,
+  onOrderPaid: async (payload) => {
+    console.log('paid', payload.data.id);
+  },
+});
+`;
+
+// A raw handler validating with @polar-sh/sdk/webhooks — print-only.
+const POLAR_RAW_ROUTE = `import { validateEvent } from '@polar-sh/sdk/webhooks';
+
+export async function POST(req: Request) {
+  const event = validateEvent(await req.text(), Object.fromEntries(req.headers), process.env.POLAR_WEBHOOK_SECRET!);
+  if (event.type === 'order.paid') handle(event.data);
+  return new Response('', { status: 202 });
+}
+`;
+
+describe("detectPolarWebhook", () => {
+  it("finds the @polar-sh/nextjs Webhooks() route (kind nextjs_helper)", () => {
+    const dir = project({ "app/api/polar/webhook/route.ts": POLAR_HELPER_ROUTE });
+    const hit = detectPolarWebhook(dir, "next-app");
+    expect(hit).not.toBeNull();
+    expect(hit!.kind).toBe("nextjs_helper");
+    expect(hit!.file).toBe(join("app", "api", "polar", "webhook", "route.ts"));
+    expect(hit!.line).toBe(3); // line of the Webhooks( call
+    expect(hit!.handlerHint).toContain("onOrderPaid");
+  });
+
+  it("finds a raw validateEvent handler (kind raw_validate)", () => {
+    const dir = project({ "app/api/polar/webhook/route.ts": POLAR_RAW_ROUTE });
+    const hit = detectPolarWebhook(dir, "next-app");
+    expect(hit).not.toBeNull();
+    expect(hit!.kind).toBe("raw_validate");
+    expect(hit!.line).toBe(4); // line of the validateEvent call
+  });
+
+  it("prefers the helper route over an earlier raw handler", () => {
+    const dir = project({
+      "app/api/other/route.ts": POLAR_RAW_ROUTE,
+      "src/polar/webhook.ts": POLAR_HELPER_ROUTE,
+    });
+    const hit = detectPolarWebhook(dir, "next-app");
+    expect(hit!.kind).toBe("nextjs_helper");
+  });
+
+  it("does not treat a Webhooks( call without the @polar-sh/nextjs import as a helper route", () => {
+    const dir = project({
+      "src/other.ts": "export const POST = Webhooks({});\n", // some other lib
+    });
+    expect(detectPolarWebhook(dir, "next-app")).toBeNull();
+  });
+
+  it("returns null when no Polar webhook exists", () => {
+    const dir = project({ "src/server.ts": "export const x = 1;\n" });
+    expect(detectPolarWebhook(dir, "next-app")).toBeNull();
   });
 });

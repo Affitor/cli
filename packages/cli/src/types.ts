@@ -15,6 +15,12 @@ export interface AffitorConfig {
   ref_param: string;
   stripe_connected?: boolean;
   stripe_account_id?: string;
+  polar_connected?: boolean;
+  /** "production" | "sandbox" — which Polar environment the webhook lives in. */
+  polar_environment?: string;
+  polar_webhook_endpoint_id?: string;
+  /** The advertiser-app URL the Polar webhook endpoint delivers to. */
+  polar_webhook_url?: string;
   api_url: string;
   created_at: string;
   // v1 only — removed in v2 (moved to .affitor/.env)
@@ -25,6 +31,8 @@ export interface AffitorSecrets {
   api_key: string;
   program_id: string;
   stripe_account_id?: string;
+  /** Polar webhook signing secret (returned once at endpoint creation). */
+  polar_webhook_secret?: string;
 }
 
 export interface UserCredentials {
