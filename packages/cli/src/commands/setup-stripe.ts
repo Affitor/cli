@@ -95,7 +95,11 @@ async function runSetupStripe(
   }
 
   const apiUrl = flags.apiUrl ?? config.api_url;
-  const webhookUrl = `${apiUrl}/webhooks/stripe/${config.program_id}`;
+  // The CMS ingests ALL Stripe webhooks at one global route (it routes events by
+  // their content, not by a program id in the path). The old per-program path
+  // (`/webhooks/stripe/:programId`) never existed server-side — endpoints
+  // registered against it 404'd and every event was silently lost.
+  const webhookUrl = `${apiUrl}/api/webhook-distributor/stripe`;
 
   try {
     const totalSteps = 3;
