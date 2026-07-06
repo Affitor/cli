@@ -5,12 +5,13 @@ import { readConfig, updateConfig, writeSecrets, readSecrets, ConfigNotFoundErro
 import { runStripeOAuth, StripeOAuthError } from "../lib/stripe-oauth.js";
 import { AffitorAPI, APIError, NetworkError } from "../lib/api-client.js";
 import { getFlags } from "../lib/flags.js";
+import { registerSetupPolarCommand } from "./setup-polar.js";
 import type { CLIFlags } from "../types.js";
 
 export function registerSetupCommand(program: Command) {
   const setup = program
     .command("setup")
-    .description("Set up integrations (stripe, dns)");
+    .description("Set up integrations (stripe, polar, dns)");
 
   setup
     .command("stripe")
@@ -20,6 +21,8 @@ export function registerSetupCommand(program: Command) {
     .action(async (opts, cmd) => {
       await runSetupStripe(opts, getFlags(cmd));
     });
+
+  registerSetupPolarCommand(setup);
 
   setup
     .command("dns")
