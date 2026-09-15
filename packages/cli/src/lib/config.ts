@@ -108,7 +108,9 @@ export function writeSecrets(secrets: AffitorSecrets, cwd?: string): void {
   }
   lines.push("");
 
-  writeFileSync(getSecretsPath(cwd), lines.join("\n"));
+  const path = getSecretsPath(cwd);
+  writeFileSync(path, lines.join("\n"));
+  chmodSync(path, 0o600);
 }
 
 // ─── Global credentials (~/.affitor/) ─────────────────────────────

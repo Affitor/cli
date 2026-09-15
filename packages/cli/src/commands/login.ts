@@ -1,6 +1,7 @@
 import { Command } from "commander";
 import pc from "picocolors";
-import { exec } from "node:child_process";
+import { URL } from "node:url";
+import open from "open";
 import { AffitorAPI } from "../lib/api-client.js";
 import { writeCredentials, readCredentials } from "../lib/config.js";
 import * as logger from "../lib/logger.js";
@@ -128,18 +129,23 @@ async function runLogin(flags: { apiUrl?: string; json?: boolean }) {
   process.exit(1);
 }
 
-function openBrowser(url: string) {
-  const cmd =
-    process.platform === "darwin"
-      ? `open "${url}"`
-      : process.platform === "win32"
-        ? `start "" "${url}"`
-        : `xdg-open "${url}"`;
+export function openBrowser(url: string): void {
+  let target: URL;
+  try {
+    target = new URL(url);
+  } catch {
+    logger.warn("Login URL is invalid. Open the displayed URL manually only if you trust it.");
+    return;
+  }
 
-  exec(cmd, (err) => {
-    if (err) {
-      logger.debug(`Failed to open browser: ${err.message}`);
-    }
+  if (target.protocol !== "https:") {
+    logger.warn("Login URL must use HTTPS. The browser was not opened.");
+    return;
+  }
+
+  void open(target.href).catch((err: unknown) => {
+    const message = err instanceof Error ? err.message : String(err);
+    logger.debug(`Failed to open browser: ${message}`);
   });
 }
 
