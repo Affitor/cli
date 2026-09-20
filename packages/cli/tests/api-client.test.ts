@@ -1,17 +1,13 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import {
-  AffitorAPI,
-  APIError,
-  resetReportedWarnings,
-} from "../src/lib/api-client";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { AffitorAPI, APIError } from "../src/lib/api-client";
 
-function stubFetch(status: number, body: unknown) {
+function stubFetch(status: number, body: unknown, headers: Record<string, string> = {}) {
   vi.stubGlobal(
     "fetch",
     vi.fn(async () => ({
       ok: status >= 200 && status < 300,
       status,
-      headers: { get: () => null },
+      headers: { get: (k: string) => headers[k] ?? null },
       json: async () => body,
     })),
   );
@@ -75,6 +71,11 @@ const ROTATION_WARNING = {
   docs_url: "https://docs.affitor.com/api-reference/errors#api_key_rotation_required",
 };
 
+/** A fresh client, the way each command run builds exactly one. */
+function client(): AffitorAPI {
+  return new AffitorAPI({ apiUrl: "http://test.local" });
+}
+
 const ROTATION_ERROR = {
   error: {
     code: "api_key_rotation_required",
@@ -85,12 +86,6 @@ const ROTATION_ERROR = {
 };
 
 describe("AffitorAPI key-rotation signal", () => {
-  const api = new AffitorAPI({ apiUrl: "http://test.local" });
-
-  beforeEach(() => {
-    resetReportedWarnings();
-  });
-
   afterEach(() => {
     vi.unstubAllGlobals();
     vi.restoreAllMocks();
@@ -100,7 +95,7 @@ describe("AffitorAPI key-rotation signal", () => {
     const stderr = vi.spyOn(console, "error").mockImplementation(() => {});
     stubFetch(200, { data: { program_id: "1" }, warnings: [ROTATION_WARNING] });
 
-    await api.getStatus("1");
+    await client().getStatus("1");
 
     expect(stderr).toHaveBeenCalledTimes(1);
     const line = stderr.mock.calls[0][0] as string;
@@ -114,7 +109,7 @@ describe("AffitorAPI key-rotation signal", () => {
     const stdout = vi.spyOn(console, "log").mockImplementation(() => {});
     stubFetch(200, { data: { program_id: "1" }, warnings: [ROTATION_WARNING] });
 
-    await api.getStatus("1");
+    await client().getStatus("1");
 
     expect(stderr).toHaveBeenCalledTimes(1);
     expect(stdout).not.toHaveBeenCalled();
@@ -124,12 +119,13 @@ describe("AffitorAPI key-rotation signal", () => {
     vi.spyOn(console, "error").mockImplementation(() => {});
     stubFetch(200, { data: { program_id: "1" }, warnings: [ROTATION_WARNING] });
 
-    await expect(api.getStatus("1")).resolves.toMatchObject({ program_id: "1" });
+    await expect(client().getStatus("1")).resolves.toMatchObject({ program_id: "1" });
   });
 
   it("reports the same warning once, not once per request in a command", async () => {
     const stderr = vi.spyOn(console, "error").mockImplementation(() => {});
     stubFetch(200, { data: { program_id: "1" }, warnings: [ROTATION_WARNING] });
+    const api = client();
 
     await api.getStatus("1");
     await api.getStatus("1");
@@ -138,10 +134,83 @@ describe("AffitorAPI key-rotation signal", () => {
     expect(stderr).toHaveBeenCalledTimes(1);
   });
 
+  it("warns again for a second client, so a second run is never silent", async () => {
+    const stderr = vi.spyOn(console, "error").mockImplementation(() => {});
+    stubFetch(200, { data: { program_id: "1" }, warnings: [ROTATION_WARNING] });
+
+    // Two clients in one process stand for two runs of the command: the memory
+    // belongs to the client, so the second run hears the warning too.
+    await client().getStatus("1");
+    await client().getStatus("1");
+
+    expect(stderr).toHaveBeenCalledTimes(2);
+  });
+
+  it("warns again after the client's memory is reset", async () => {
+    const stderr = vi.spyOn(console, "error").mockImplementation(() => {});
+    stubFetch(200, { data: { program_id: "1" }, warnings: [ROTATION_WARNING] });
+    const api = client();
+
+    await api.getStatus("1");
+    api.resetReportedWarnings();
+    await api.getStatus("1");
+
+    expect(stderr).toHaveBeenCalledTimes(2);
+  });
+
+  it("still reports a warning that rides on a 400, and keeps the error intact", async () => {
+    const stderr = vi.spyOn(console, "error").mockImplementation(() => {});
+    const stdout = vi.spyOn(console, "log").mockImplementation(() => {});
+    stubFetch(400, { error: { message: "Program not found" }, warnings: [ROTATION_WARNING] });
+
+    await expect(client().getStatus("1")).rejects.toMatchObject({
+      status: 400,
+      message: "Program not found",
+    });
+
+    expect(stderr).toHaveBeenCalledTimes(1);
+    expect(stderr.mock.calls[0][0]).toContain(ROTATION_WARNING.message);
+    expect(stdout).not.toHaveBeenCalled();
+  });
+
+  it("still reports a warning that rides on a 500, and keeps the error intact", async () => {
+    const stderr = vi.spyOn(console, "error").mockImplementation(() => {});
+    const stdout = vi.spyOn(console, "log").mockImplementation(() => {});
+    stubFetch(500, { error: { message: "boom" }, warnings: [ROTATION_WARNING] });
+
+    await expect(client().getStatus("1")).rejects.toMatchObject({
+      status: 500,
+      message: "boom",
+    });
+
+    expect(stderr).toHaveBeenCalledTimes(1);
+    expect(stderr.mock.calls[0][0]).toContain(ROTATION_WARNING.message);
+    expect(stdout).not.toHaveBeenCalled();
+  });
+
+  it("still reports a warning that rides on a 429, and keeps the rate-limit error", async () => {
+    const stderr = vi.spyOn(console, "error").mockImplementation(() => {});
+    const stdout = vi.spyOn(console, "log").mockImplementation(() => {});
+    stubFetch(
+      429,
+      { error: { code: "rate_limited" }, warnings: [ROTATION_WARNING] },
+      { "Retry-After": "7" },
+    );
+
+    await expect(client().getStatus("1")).rejects.toMatchObject({
+      status: 429,
+      message: "Rate limited. Wait 7 seconds and try again.",
+    });
+
+    expect(stderr).toHaveBeenCalledTimes(1);
+    expect(stderr.mock.calls[0][0]).toContain(ROTATION_WARNING.message);
+    expect(stdout).not.toHaveBeenCalled();
+  });
+
   it("turns the 401 into an error that names the fix, not a bare 401", async () => {
     stubFetch(401, ROTATION_ERROR);
 
-    await expect(api.getStatus("1")).rejects.toMatchObject({
+    await expect(client().getStatus("1")).rejects.toMatchObject({
       status: 401,
       code: "api_key_rotation_required",
     });
@@ -151,7 +220,7 @@ describe("AffitorAPI key-rotation signal", () => {
     stubFetch(401, ROTATION_ERROR);
 
     try {
-      await api.getStatus("1");
+      await client().getStatus("1");
       throw new Error("expected getStatus to reject");
     } catch (e) {
       expect(e).toBeInstanceOf(APIError);
