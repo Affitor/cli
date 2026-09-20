@@ -170,7 +170,7 @@ export interface VerificationChainResult {
   attributed?: boolean;
   rate_limited?: boolean;
   retry_after_seconds?: number;
-  error?: { code?: string; retry_after_seconds?: number; message?: string };
+  error?: { code?: string; retry_after_seconds?: number; message?: string; hint?: string };
   [key: string]: unknown;
 }
 

@@ -32,9 +32,29 @@ interface RequestOptions {
   apiUrl?: string;
 }
 
+/**
+ * A non-fatal notice the API attaches to a response, next to `data` rather than
+ * inside it — and on an error response as much as on a successful one. A key
+ * flagged for replacement is the first one: requests keep working until the
+ * deadline and carry the warning every time.
+ */
+interface APIWarning {
+  code: string;
+  message: string;
+  hint?: string;
+  docs_url?: string;
+}
+
 export class AffitorAPI {
   private apiUrl: string;
   private apiKey?: string;
+  /**
+   * Warning codes this client has already printed. A flagged key warns on every
+   * response, so one command would otherwise print the same line once per request
+   * it makes. A command builds one client, so this lasts exactly one run: a second
+   * client, or a second run in the same process, warns again.
+   */
+  private reportedWarnings = new Set<string>();
 
   constructor(opts: { apiUrl?: string; apiKey?: string } = {}) {
     this.apiUrl = opts.apiUrl ?? DEFAULT_API_URL;
@@ -168,6 +188,7 @@ export class AffitorAPI {
     }
 
     const body = (await res.json().catch(() => ({}))) as Record<string, unknown>;
+    this.reportWarnings(body);
 
     if (res.ok) {
       // Server returns { data: { verdict, attributed, ... } } or the bare object.
@@ -187,6 +208,25 @@ export class AffitorAPI {
       rate_limited: res.status === 429 || errObj.code === "rate_limited",
       ...(retryAfter !== undefined ? { retry_after_seconds: retryAfter } : {}),
     };
+  }
+
+  /** Forget which warnings this client has printed, so they are printed again. */
+  resetReportedWarnings(): void {
+    this.reportedWarnings.clear();
+  }
+
+  /** Print each new `warnings[]` entry as one stderr line: what is wrong, what to do. */
+  private reportWarnings(body: unknown): void {
+    const warnings = (body as { warnings?: unknown } | null)?.warnings;
+    if (!Array.isArray(warnings)) return;
+
+    for (const warning of warnings as APIWarning[]) {
+      if (!warning?.message) continue;
+      const key = warning.code ?? warning.message;
+      if (this.reportedWarnings.has(key)) continue;
+      this.reportedWarnings.add(key);
+      logger.notice(warning.hint ? `${warning.message} ${warning.hint}` : warning.message);
+    }
   }
 
   private async request<T>(path: string, opts: RequestOptions = {}): Promise<T> {
@@ -212,6 +252,20 @@ export class AffitorAPI {
           body: opts.body ? JSON.stringify(opts.body) : undefined,
         });
 
+        // `warnings` sits beside `data`, and the API attaches it to an error
+        // response too: a key inside its rotation window still has to hear about
+        // the deadline while a call fails for an unrelated reason. So read the
+        // body once and report before branching on status. A body that will not
+        // parse only matters on a 2xx, where it was the payload.
+        let body: unknown = {};
+        let bodyError: unknown;
+        try {
+          body = await res.json();
+        } catch (err) {
+          bodyError = err;
+        }
+        this.reportWarnings(body);
+
         if (res.status === 429) {
           const retryAfter = res.headers.get("Retry-After");
           const wait = retryAfter ? parseInt(retryAfter, 10) * 1000 : 5000;
@@ -222,22 +276,30 @@ export class AffitorAPI {
         }
 
         if (!res.ok) {
-          const body = (await res.json().catch(() => ({}))) as {
-            error?: string | { message?: string };
+          const errorBody = (body ?? {}) as {
+            error?: string | { message?: string; code?: string; hint?: string };
             message?: string;
           };
           // Strapi returns errors as an object ({ error: { message, ... } }),
           // but some endpoints return { error: "string" } or { message }.
           // Extract a string so we never surface "[object Object]".
-          const rawError = body.error;
+          const rawError = errorBody.error;
+          const errObject = typeof rawError === "object" && rawError !== null ? rawError : undefined;
           const message =
-            (typeof rawError === "string" ? rawError : rawError?.message) ??
-            body.message ??
+            (typeof rawError === "string" ? rawError : errObject?.message) ??
+            errorBody.message ??
             `API returned ${res.status}`;
-          throw new APIError(res.status, message);
+          // A `hint` means the caller has to do something specific rather than retry
+          // (a retired key needs a new key), so keep it attached to the message, and
+          // keep `code` so a command can tell that case from a plain bad key.
+          throw new APIError(
+            res.status,
+            errObject?.hint ? `${message} ${errObject.hint}` : message,
+            errObject?.code,
+          );
         }
 
-        const body = await res.json();
+        if (bodyError) throw bodyError;
         return (body as { data?: T }).data ?? (body as T);
       } catch (err) {
         if (err instanceof APIError) throw err;
@@ -258,6 +320,8 @@ export class APIError extends Error {
   constructor(
     public status: number,
     message: string,
+    /** The API's own error code, when it sent one (e.g. api_key_rotation_required). */
+    public code?: string,
   ) {
     super(message);
     this.name = "APIError";

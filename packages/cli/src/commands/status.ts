@@ -87,7 +87,11 @@ async function runStatus(flags: CLIFlags) {
     }
   } catch (err) {
     if (err instanceof APIError) {
-      if (err.status === 401) {
+      if (err.code === "api_key_rotation_required") {
+        // The key was retired on purpose: a new one is the only fix, and the API
+        // already says by when and where. Do not bury that under the generic 401.
+        logger.error(err.message);
+      } else if (err.status === 401) {
         logger.error(
           "API key expired or invalid.\n" +
             "  Run `npx affitor init` to get a new API key.",

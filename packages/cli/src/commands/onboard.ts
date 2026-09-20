@@ -47,7 +47,7 @@ function toRecipeFramework(framework: Framework): RecipeFramework {
   return framework as RecipeFramework;
 }
 
-async function runOnboard(opts: OnboardOpts, flags: CLIFlags) {
+export async function runOnboard(opts: OnboardOpts, flags: CLIFlags) {
   const cwd = process.cwd();
   const interactive = !flags.noInteractive && opts.interactive !== false;
   // --yes (or the global --auto-confirm, or --no-interactive for agents)
@@ -133,6 +133,7 @@ async function runOnboard(opts: OnboardOpts, flags: CLIFlags) {
       integration_verified: verify.integration_verified,
       ...(verify.blocker ? { blocker: verify.blocker } : {}),
       ...(verify.next_action ? { next_action: verify.next_action } : {}),
+      ...(verify.error ? { error: verify.error } : {}),
     });
     return;
   }
@@ -370,6 +371,8 @@ interface VerifyResult {
   blocker?: string | null;
   next_action?: string | null;
   readiness?: ReadinessResult;
+  /** An API error that ends verification rather than blocking one gate. */
+  error?: { code: string; message: string };
 }
 
 const POLL_ATTEMPTS = 6;
@@ -378,6 +381,24 @@ const POLL_DELAY_MS = 2000;
 const MAX_BACKOFF_MS = 30_000;
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/** The API's code for a key that is past its replacement deadline. */
+const ROTATION_REQUIRED = "api_key_rotation_required";
+
+/**
+ * A retired key ends verification: every further call answers 401, so polling
+ * only burns time, and the only fix is a new key. The API says which key and
+ * where to replace it, so keep its own wording — on stderr for a person, in the
+ * summary for an agent reading stdout.
+ */
+function rotationBlocked(err: { message?: string; hint?: string }): VerifyResult {
+  const message = err.hint ? `${err.message} ${err.hint}` : (err.message ?? "");
+  logger.error(message);
+  return {
+    integration_verified: false,
+    error: { code: ROTATION_REQUIRED, message },
+  };
+}
 
 /**
  * Fire the synthetic chain, then poll readiness up to POLL_ATTEMPTS times until
@@ -395,6 +416,9 @@ async function runVerifyLoop(
   // Fire the chain. On 429, back off once (capped) then continue to polling.
   try {
     const chain = await api.runVerificationChain({ apiKey: opts.apiKey, apiUrl: opts.apiUrl });
+    // The chain returns a non-2xx as data rather than throwing, so a retired key
+    // arrives here as a body, not an exception.
+    if (chain.error?.code === ROTATION_REQUIRED) return rotationBlocked(chain.error);
     if (chain.rate_limited) {
       const wait = Math.min((chain.retry_after_seconds ?? 5) * 1000, MAX_BACKOFF_MS);
       if (!opts.json) {
@@ -420,6 +444,9 @@ async function runVerifyLoop(
     try {
       last = await api.getReadiness({ apiKey: opts.apiKey, apiUrl: opts.apiUrl });
     } catch (err) {
+      if (err instanceof APIError && err.code === ROTATION_REQUIRED) {
+        return rotationBlocked({ message: err.message });
+      }
       if (!opts.json) {
         const msg = err instanceof APIError ? err.message : (err as Error).message;
         logger.step(`Readiness check failed (attempt ${attempt}/${POLL_ATTEMPTS}): ${msg}`);
