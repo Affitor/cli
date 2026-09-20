@@ -32,6 +32,41 @@ interface RequestOptions {
   apiUrl?: string;
 }
 
+/**
+ * A non-fatal notice the API attaches to an otherwise successful response, next to
+ * `data` rather than inside it. A key flagged for replacement is the first one:
+ * requests keep working until the deadline and carry the warning every time.
+ */
+interface APIWarning {
+  code: string;
+  message: string;
+  hint?: string;
+  docs_url?: string;
+}
+
+// A flagged key warns on every response, so one command would print the same line
+// once per request it makes. Report each warning once per process instead.
+const reportedWarnings = new Set<string>();
+
+/** Forget which warnings have been reported. For tests; a real run is one command. */
+export function resetReportedWarnings(): void {
+  reportedWarnings.clear();
+}
+
+/** Print each new `warnings[]` entry as one stderr line: what is wrong, what to do. */
+function reportWarnings(body: unknown): void {
+  const warnings = (body as { warnings?: unknown } | null)?.warnings;
+  if (!Array.isArray(warnings)) return;
+
+  for (const warning of warnings as APIWarning[]) {
+    if (!warning?.message) continue;
+    const key = warning.code ?? warning.message;
+    if (reportedWarnings.has(key)) continue;
+    reportedWarnings.add(key);
+    logger.notice(warning.hint ? `${warning.message} ${warning.hint}` : warning.message);
+  }
+}
+
 export class AffitorAPI {
   private apiUrl: string;
   private apiKey?: string;
@@ -168,6 +203,7 @@ export class AffitorAPI {
     }
 
     const body = (await res.json().catch(() => ({}))) as Record<string, unknown>;
+    reportWarnings(body);
 
     if (res.ok) {
       // Server returns { data: { verdict, attributed, ... } } or the bare object.
@@ -223,21 +259,31 @@ export class AffitorAPI {
 
         if (!res.ok) {
           const body = (await res.json().catch(() => ({}))) as {
-            error?: string | { message?: string };
+            error?: string | { message?: string; code?: string; hint?: string };
             message?: string;
           };
           // Strapi returns errors as an object ({ error: { message, ... } }),
           // but some endpoints return { error: "string" } or { message }.
           // Extract a string so we never surface "[object Object]".
           const rawError = body.error;
+          const errObject = typeof rawError === "object" && rawError !== null ? rawError : undefined;
           const message =
-            (typeof rawError === "string" ? rawError : rawError?.message) ??
+            (typeof rawError === "string" ? rawError : errObject?.message) ??
             body.message ??
             `API returned ${res.status}`;
-          throw new APIError(res.status, message);
+          // A `hint` means the caller has to do something specific rather than retry
+          // (a retired key needs a new key), so keep it attached to the message, and
+          // keep `code` so a command can tell that case from a plain bad key.
+          throw new APIError(
+            res.status,
+            errObject?.hint ? `${message} ${errObject.hint}` : message,
+            errObject?.code,
+          );
         }
 
         const body = await res.json();
+        // `warnings` sits beside `data`, so read it before unwrapping.
+        reportWarnings(body);
         return (body as { data?: T }).data ?? (body as T);
       } catch (err) {
         if (err instanceof APIError) throw err;
@@ -258,6 +304,8 @@ export class APIError extends Error {
   constructor(
     public status: number,
     message: string,
+    /** The API's own error code, when it sent one (e.g. api_key_rotation_required). */
+    public code?: string,
   ) {
     super(message);
     this.name = "APIError";

@@ -34,6 +34,17 @@ export function error(msg: string) {
   console.error(pc.red("✗") + " " + msg);
 }
 
+/**
+ * A notice the API attached to its own response (a warning, a deprecation).
+ *
+ * Writes to stderr so it can never mix into `--json` stdout, and stays visible in
+ * JSON mode: an agent parsing stdout still gets the signal on stderr. Neutral tone,
+ * because the call the notice belongs to still succeeded.
+ */
+export function notice(msg: string) {
+  console.error(pc.dim(msg));
+}
+
 export function step(msg: string) {
   if (quietMode || jsonMode) return;
   console.log(pc.dim("  " + msg));
