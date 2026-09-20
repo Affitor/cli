@@ -45,7 +45,7 @@ export function registerInitCommand(program: Command) {
     });
 }
 
-async function runInit(
+export async function runInit(
   opts: {
     name?: string;
     domain?: string;
@@ -71,10 +71,14 @@ async function runInit(
   }
 
   if (configExists()) {
+    // `init` creates a new program. It does not restore an existing one and does not replace
+    // an existing program's API key, so the message says both, and names what does.
     logger.error(
       "Affitor already configured in this directory.\n" +
         "  Use `npx affitor status` to check your program.\n" +
-        "  Delete `.affitor/` to reinitialize.",
+        "  `init` creates a new program: it does not restore this one and does not replace its API key.\n" +
+        "  For a new key, ask a workspace owner of this program to open Affitor → Settings → API Key " +
+        "and click Regenerate, then replace the key this project uses.",
     );
     if (flags.json) {
       logger.json({ error: "already_configured" });

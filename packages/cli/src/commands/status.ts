@@ -1,7 +1,7 @@
 import type { Command } from "commander";
 import * as logger from "../lib/logger.js";
 import { format } from "../lib/logger.js";
-import { readConfig, ConfigNotFoundError } from "../lib/config.js";
+import { readConfig, ConfigNotFoundError, apiKeySourceLabel } from "../lib/config.js";
 import { AffitorAPI, APIError, NetworkError } from "../lib/api-client.js";
 import { getFlags } from "../lib/flags.js";
 import type { CLIFlags } from "../types.js";
@@ -15,7 +15,7 @@ export function registerStatusCommand(program: Command) {
     });
 }
 
-async function runStatus(flags: CLIFlags) {
+export async function runStatus(flags: CLIFlags) {
   let config;
   try {
     config = readConfig();
@@ -92,9 +92,14 @@ async function runStatus(flags: CLIFlags) {
         // already says by when and where. Do not bury that under the generic 401.
         logger.error(err.message);
       } else if (err.status === 401) {
+        // Regenerating is what returns a working key for a program that already exists, and
+        // only a workspace owner of that program can do it. The new key then has to land where
+        // this command actually reads one: `--api-key` wins over the environment, so naming
+        // only AFFITOR_API_KEY would leave the refused key on the wire.
         logger.error(
           "API key expired or invalid.\n" +
-            "  Run `npx affitor init` to get a new API key.",
+            `  Ask a workspace owner of program ${config.program_id} to open Affitor → Settings → API Key and click Regenerate.\n` +
+            `  Then replace the key in ${apiKeySourceLabel(flags)} with the new one.`,
         );
       } else {
         logger.error(`API error: ${err.message}`);
