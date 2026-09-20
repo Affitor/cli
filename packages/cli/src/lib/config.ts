@@ -161,16 +161,22 @@ export function deleteCredentials(): void {
 
 // ─── Resolve API key (priority chain) ─────────────────────────────
 
-export function resolveApiKey(flags: { apiKey?: string }, cwd?: string): string | null {
+/** Where the key a command sends came from, so "replace it" can name the right place. */
+export type ApiKeySource = "flag" | "env" | "secrets" | "legacy-config" | "none";
+
+function resolveApiKeyWithSource(
+  flags: { apiKey?: string },
+  cwd?: string,
+): { key: string | null; source: ApiKeySource } {
   // 1. --api-key flag
-  if (flags.apiKey) return flags.apiKey;
+  if (flags.apiKey) return { key: flags.apiKey, source: "flag" };
 
   // 2. AFFITOR_API_KEY env var
-  if (process.env.AFFITOR_API_KEY) return process.env.AFFITOR_API_KEY;
+  if (process.env.AFFITOR_API_KEY) return { key: process.env.AFFITOR_API_KEY, source: "env" };
 
   // 3. .affitor/.env (project secrets)
   const secrets = readSecrets(cwd);
-  if (secrets?.api_key) return secrets.api_key;
+  if (secrets?.api_key) return { key: secrets.api_key, source: "secrets" };
 
   // 4. Legacy: config.json api_key (v1)
   try {
@@ -178,13 +184,44 @@ export function resolveApiKey(flags: { apiKey?: string }, cwd?: string): string 
     if (existsSync(configPath)) {
       const raw = readFileSync(configPath, "utf-8");
       const config = JSON.parse(raw) as AffitorConfig;
-      if (config.api_key) return config.api_key;
+      if (config.api_key) return { key: config.api_key, source: "legacy-config" };
     }
   } catch {
     // ignore
   }
 
-  return null;
+  return { key: null, source: "none" };
+}
+
+export function resolveApiKey(flags: { apiKey?: string }, cwd?: string): string | null {
+  return resolveApiKeyWithSource(flags, cwd).key;
+}
+
+/**
+ * Name the place a rejected key has to be replaced.
+ *
+ * The chain above is a priority chain: `--api-key` beats AFFITOR_API_KEY, which beats
+ * `.affitor/.env`. Telling someone who passed `--api-key` to update the env variable
+ * would leave the same key on the wire and the same 401, so an error names the source
+ * that actually won. Derived from the one resolver, so the two cannot drift apart.
+ *
+ * Each label names the thing the reader has to edit, spelled as that place spells it:
+ * `.affitor/.env` holds `AFFITOR_API_KEY=` (readSecrets/writeSecrets above), while
+ * `api_key` is a field name and only appears in a v1 `.affitor/config.json`.
+ */
+export function apiKeySourceLabel(flags: { apiKey?: string }, cwd?: string): string {
+  switch (resolveApiKeyWithSource(flags, cwd).source) {
+    case "flag":
+      return "the `--api-key` option you passed";
+    case "env":
+      return "AFFITOR_API_KEY in this environment";
+    case "secrets":
+      return "AFFITOR_API_KEY in .affitor/.env";
+    case "legacy-config":
+      return "`api_key` in .affitor/config.json";
+    default:
+      return "AFFITOR_API_KEY in this environment or in .affitor/.env";
+  }
 }
 
 // ─── v1 → v2 migration ───────────────────────────────────────────
