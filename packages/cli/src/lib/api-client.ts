@@ -45,6 +45,33 @@ interface APIWarning {
   docs_url?: string;
 }
 
+/**
+ * The dedupe key the body warning and the response headers share. Both say the same
+ * thing about the same key, so whichever arrives first speaks and the other stays
+ * quiet — the body wins when it is there, because it carries a hint as well.
+ */
+const ROTATION_KEY = "api_key_rotation_required";
+
+/** The `Sunset` deadline as a plain date, or undefined if it will not parse. */
+function parseSunset(sunset: string | null | undefined): string | undefined {
+  if (!sunset) return undefined;
+  const at = new Date(sunset);
+  // An unparseable date is a signal we cannot use, not a reason to fail the command.
+  if (Number.isNaN(at.getTime())) return undefined;
+  return at.toISOString().slice(0, 10);
+}
+
+/** The URL out of `Link: <url>; rel="deprecation"`, ignoring links with any other rel. */
+function parseDeprecationLink(link: string | null | undefined): string | undefined {
+  if (!link) return undefined;
+  for (const entry of link.split(",")) {
+    if (!/rel\s*=\s*"?deprecation"?/i.test(entry)) continue;
+    const url = /<([^>]+)>/.exec(entry);
+    if (url) return url[1].trim();
+  }
+  return undefined;
+}
+
 export class AffitorAPI {
   private apiUrl: string;
   private apiKey?: string;
@@ -189,6 +216,7 @@ export class AffitorAPI {
 
     const body = (await res.json().catch(() => ({}))) as Record<string, unknown>;
     this.reportWarnings(body);
+    this.reportDeprecationHeaders(res);
 
     if (res.ok) {
       // Server returns { data: { verdict, attributed, ... } } or the bare object.
@@ -229,6 +257,44 @@ export class AffitorAPI {
     }
   }
 
+  /**
+   * Print the rotation signal the API sets in headers on EVERY response made with a
+   * flagged key — `Deprecation` (RFC 9745), `Sunset` (RFC 8594) and a `deprecation`
+   * link. Past the deadline the API answers 401 and drops `warnings[]`, so these
+   * headers are the only thing left saying why (W37-1362).
+   *
+   * Shares `reportedWarnings` with the body warning under one key, so a response
+   * carrying both prints once. Anything missing or unparseable is skipped in
+   * silence: a side signal must never break a command that is otherwise working.
+   */
+  private reportDeprecationHeaders(res: Response): void {
+    let deprecation: string | null = null;
+    let sunset: string | null = null;
+    let link: string | null = null;
+    try {
+      deprecation = res.headers?.get("Deprecation") ?? null;
+      sunset = res.headers?.get("Sunset") ?? null;
+      link = res.headers?.get("Link") ?? null;
+    } catch {
+      return;
+    }
+
+    if (!deprecation && !sunset) return;
+    if (this.reportedWarnings.has(ROTATION_KEY)) return;
+    this.reportedWarnings.add(ROTATION_KEY);
+
+    const by = parseSunset(sunset);
+    const docs = parseDeprecationLink(link);
+    logger.notice(
+      [
+        by ? `This API key must be replaced by ${by}.` : "This API key must be replaced.",
+        docs ? `See ${docs}` : undefined,
+      ]
+        .filter(Boolean)
+        .join(" "),
+    );
+  }
+
   private async request<T>(path: string, opts: RequestOptions = {}): Promise<T> {
     const url = `${opts.apiUrl ?? this.apiUrl}${path}`;
     const key = opts.apiKey ?? this.apiKey;
@@ -265,6 +331,10 @@ export class AffitorAPI {
           bodyError = err;
         }
         this.reportWarnings(body);
+        // After the body, so the richer body warning claims the shared key, and
+        // before every branch below, so a 429 or a 401 reports too — the 401 past
+        // the deadline has nothing but these headers.
+        this.reportDeprecationHeaders(res);
 
         if (res.status === 429) {
           const retryAfter = res.headers.get("Retry-After");
