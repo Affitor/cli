@@ -126,6 +126,10 @@ export async function runOnboard(opts: OnboardOpts, flags: CLIFlags) {
   const verify = await runVerifyLoop(api, { apiKey, apiUrl, json: flags.json });
 
   // ── (h) Final summary. ──
+  // Exit 0 only when the integration is verified. exitCode, not exit(), so the
+  // summary below still reaches stdout.
+  if (!verify.integration_verified) process.exitCode = 1;
+
   if (flags.json) {
     logger.json({
       program_id: verify.readiness?.program_id ?? null,

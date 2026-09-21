@@ -14,6 +14,9 @@ export function registerWhoamiCommand(parent: Command) {
       if (!creds) {
         if (flags.json) {
           logger.json({ logged_in: false });
+          // Same exit code as the text mode below. exitCode, not exit(), so the
+          // JSON reaches a piped stdout before the process ends.
+          process.exitCode = 1;
           return;
         }
         logger.info("");
