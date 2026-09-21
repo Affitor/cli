@@ -217,13 +217,15 @@ describe("exit codes an agent can trust", () => {
       expect(process.exitCode).toBeUndefined();
     });
 
-    it("--json, a gate is still unknown and none fails: pending, exit code left at 0", async () => {
+    it("--json, a gate is still unknown and none fails: not verified yet, exits 1", async () => {
       stubApi({ status: 200, body: CHAIN_OK }, { status: 200, body: TRACKING_IN_FLIGHT });
 
       const out = await onboard(true);
 
-      expect(JSON.parse(out[0])).toMatchObject({ integration_verified: false, blocker: "tracking" });
-      expect(process.exitCode).toBeUndefined();
+      expect(out).toEqual([
+        pretty({ program_id: 42, steps: JSON_STEPS, integration_verified: false, blocker: "tracking" }),
+      ]);
+      expect(process.exitCode).toBe(1);
     });
 
     it("text mode, a gate fails: exits 1", async () => {
