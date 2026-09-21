@@ -5,19 +5,30 @@ on:
   push:
     branches: [main]
 
-# This repo is public and publishes to npm; a workflow here never needs write access.
+# This repo is public and publishes `affitor` to npm; a workflow here never needs write access.
 permissions:
   contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   validate:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
+      # Actions are pinned to a commit, not a moving tag: a tag can be repointed,
+      # and this repo publishes to npm. The comment records which tag was pinned.
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          # This job runs code from the pull request. Do not leave the token in
+          # .git/config where that code can read it.
+          persist-credentials: false
 
       - name: Setup Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 20
           cache: npm
@@ -25,11 +36,13 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      # No `--if-present`: all three workspaces declare build, lint and test today,
+      # so a missing script means a package quietly stopped being checked. Fail loudly.
       - name: Build
-        run: npm run build --workspaces --if-present
+        run: npm run build --workspaces
 
       - name: Lint
-        run: npm run lint --workspaces --if-present
+        run: npm run lint --workspaces
 
       - name: Unit tests
-        run: npm run test --workspaces --if-present
+        run: npm run test --workspaces
