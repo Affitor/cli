@@ -229,3 +229,138 @@ describe("AffitorAPI key-rotation signal", () => {
     }
   });
 });
+
+// The headers the API sets on EVERY response made with a flagged key, including the
+// 401 after the deadline — where the body is a bare error envelope and `warnings[]`
+// is gone. They are the only rotation signal left in that case (W37-1362).
+const ROTATION_DOCS_URL =
+  "https://docs.affitor.com/api-reference/errors#api_key_rotation_required";
+const ROTATION_HEADERS = {
+  Deprecation: "@1790035200",
+  Sunset: "Sat, 03 Oct 2026 00:00:00 GMT",
+  Link: `<${ROTATION_DOCS_URL}>; rel="deprecation"`,
+};
+
+describe("AffitorAPI key-rotation headers", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  it("reports the deadline and the docs link from headers alone, with no warnings in the body", async () => {
+    const stderr = vi.spyOn(console, "error").mockImplementation(() => {});
+    stubFetch(200, { data: { program_id: "1" } }, ROTATION_HEADERS);
+
+    await client().getStatus("1");
+
+    expect(stderr).toHaveBeenCalledTimes(1);
+    const line = stderr.mock.calls[0][0] as string;
+    expect(line).toContain("2026-10-03");
+    expect(line).toContain(ROTATION_DOCS_URL);
+    expect(line).not.toContain("\n");
+  });
+
+  // The case this ticket exists for: past the deadline the API returns 401 and stops
+  // sending `warnings[]`, so a client that only reads the body goes silent exactly
+  // when the user most needs to be told.
+  it("still reports from headers on the 401 after the deadline, where the body has no warnings", async () => {
+    const stderr = vi.spyOn(console, "error").mockImplementation(() => {});
+    stubFetch(401, ROTATION_ERROR, ROTATION_HEADERS);
+
+    await expect(client().getStatus("1")).rejects.toMatchObject({ status: 401 });
+
+    expect(stderr).toHaveBeenCalledTimes(1);
+    expect(stderr.mock.calls[0][0]).toContain(ROTATION_DOCS_URL);
+  });
+
+  it("reports the header signal once per run, not once per request", async () => {
+    const stderr = vi.spyOn(console, "error").mockImplementation(() => {});
+    stubFetch(200, { data: { program_id: "1" } }, ROTATION_HEADERS);
+    const api = client();
+
+    await api.getStatus("1");
+    await api.getStatus("1");
+    await api.listPrograms();
+
+    expect(stderr).toHaveBeenCalledTimes(1);
+  });
+
+  // Both signals carry the same news, so they share one dedupe key: the body warning
+  // is richer and gets there first, the headers stay quiet behind it.
+  it("reports once, not twice, when the body warning and the headers both arrive", async () => {
+    const stderr = vi.spyOn(console, "error").mockImplementation(() => {});
+    stubFetch(
+      200,
+      { data: { program_id: "1" }, warnings: [ROTATION_WARNING] },
+      ROTATION_HEADERS,
+    );
+
+    await client().getStatus("1");
+
+    expect(stderr).toHaveBeenCalledTimes(1);
+    expect(stderr.mock.calls[0][0]).toContain(ROTATION_WARNING.hint);
+  });
+
+  it("says nothing when the response carries no rotation headers", async () => {
+    const stderr = vi.spyOn(console, "error").mockImplementation(() => {});
+    stubFetch(200, { data: { program_id: "1" } });
+
+    await client().getStatus("1");
+
+    expect(stderr).not.toHaveBeenCalled();
+  });
+
+  it("keeps the header notice off stdout so --json output stays parseable", async () => {
+    const stderr = vi.spyOn(console, "error").mockImplementation(() => {});
+    const stdout = vi.spyOn(console, "log").mockImplementation(() => {});
+    stubFetch(200, { data: { program_id: "1" } }, ROTATION_HEADERS);
+
+    await expect(client().getStatus("1")).resolves.toMatchObject({ program_id: "1" });
+
+    expect(stderr).toHaveBeenCalledTimes(1);
+    expect(stdout).not.toHaveBeenCalled();
+  });
+
+  // A header is a side signal: a value the CLI cannot read must never take down a
+  // command that is otherwise working. `new Date("not-a-date").toISOString()` throws.
+  it("survives an unparseable Sunset without throwing or printing the raw value", async () => {
+    const stderr = vi.spyOn(console, "error").mockImplementation(() => {});
+    stubFetch(
+      200,
+      { data: { program_id: "1" } },
+      { ...ROTATION_HEADERS, Sunset: "not-a-date" },
+    );
+
+    await expect(client().getStatus("1")).resolves.toMatchObject({ program_id: "1" });
+
+    expect(stderr).toHaveBeenCalledTimes(1);
+    const line = stderr.mock.calls[0][0] as string;
+    expect(line).not.toContain("not-a-date");
+    expect(line).not.toContain("Invalid Date");
+    expect(line).toContain(ROTATION_DOCS_URL);
+  });
+
+  // `runVerificationChain` deliberately bypasses `request()` (a 429 there is expected
+  // and must not throw), so it needs the header read wired in separately.
+  it("reports from headers on the verification chain, which does not go through request()", async () => {
+    const stderr = vi.spyOn(console, "error").mockImplementation(() => {});
+    stubFetch(200, { data: { verdict: "pass" } }, ROTATION_HEADERS);
+
+    await client().runVerificationChain();
+
+    expect(stderr).toHaveBeenCalledTimes(1);
+    expect(stderr.mock.calls[0][0]).toContain(ROTATION_DOCS_URL);
+  });
+
+  it("reports again after the client's memory is reset, headers included", async () => {
+    const stderr = vi.spyOn(console, "error").mockImplementation(() => {});
+    stubFetch(200, { data: { program_id: "1" } }, ROTATION_HEADERS);
+    const api = client();
+
+    await api.getStatus("1");
+    api.resetReportedWarnings();
+    await api.getStatus("1");
+
+    expect(stderr).toHaveBeenCalledTimes(2);
+  });
+});
