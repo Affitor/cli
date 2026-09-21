@@ -126,6 +126,10 @@ export async function runOnboard(opts: OnboardOpts, flags: CLIFlags) {
   const verify = await runVerifyLoop(api, { apiKey, apiUrl, json: flags.json });
 
   // ── (h) Final summary. ──
+  // An agent reads the exit code first, so a run that failed to verify must not
+  // exit 0. exitCode, not exit(), so the summary below still reaches stdout.
+  if (onboardFailed(verify)) process.exitCode = 1;
+
   if (flags.json) {
     logger.json({
       program_id: verify.readiness?.program_id ?? null,
@@ -474,6 +478,23 @@ async function runVerifyLoop(
     next_action: gate?.next_action ?? null,
     readiness: last,
   };
+}
+
+/**
+ * Whether a finished run failed. Not verified is a failure when the API refused
+ * the key (`error`), when readiness never answered, or when any gate reports
+ * `fail`. A gate the server still reports as `unknown` (its check is in flight,
+ * "don't fail yet") with none failing is pending, not failed, so it keeps exit 0.
+ * `payout` is optional and never blocks verification, so it is not counted.
+ */
+function onboardFailed(v: VerifyResult): boolean {
+  if (v.integration_verified) return false;
+  const gates = v.readiness?.gates;
+  if (v.error || !gates) return true;
+  const statuses = Object.entries(gates)
+    .filter(([id]) => id !== "payout")
+    .map(([, gate]) => gate?.status);
+  return statuses.includes("fail") || !statuses.includes("unknown");
 }
 
 /**
