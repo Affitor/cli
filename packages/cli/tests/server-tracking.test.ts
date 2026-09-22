@@ -65,11 +65,15 @@ describe("serverTrackingSnippets", () => {
     expect(s.lead).toContain("trackLead({ customerExternalId: user.id, clickId: cookies.affitor_click_id })");
   });
 
-  it("Polar → order.paid + total_amount + order.id", () => {
+  it("Polar → order.paid + SDK camelCase totalAmount + order.id", () => {
+    // The @polar-sh SDK helpers (Webhooks()/validateEvent) deliver camelCase
+    // parsed objects — order.totalAmount, NOT the raw JSON's total_amount.
     const s = serverTrackingSnippets("polar");
     expect(s.saleContext).toContain("order.paid");
-    expect(s.sale).toContain("amount: order.total_amount");
+    expect(s.sale).toContain("amount: order.totalAmount");
     expect(s.sale).toContain("invoiceId: order.id");
+    expect(s.sale).toContain("order.metadata?.reference_id");
+    expect(s.sale).not.toContain("total_amount");
   });
 
   it("Lemon Squeezy → order_created + data.attributes.total + meta.custom_data", () => {

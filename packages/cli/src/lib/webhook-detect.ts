@@ -128,3 +128,90 @@ export function detectStripeWebhook(
 
   return null;
 }
+
+// ─── Polar ────────────────────────────────────────────────────────────
+
+/**
+ * The two ways a Polar webhook route validates events (Standard Webhooks):
+ *   - "nextjs_helper" — the `Webhooks({ ... })` route factory from
+ *     `@polar-sh/nextjs` (validates the signature internally, exposes typed
+ *     `onOrderPaid`-style callbacks). The only shape `onboard` auto-injects.
+ *   - "raw_validate"  — a hand-rolled handler calling `validateEvent` from
+ *     `@polar-sh/sdk/webhooks`. Too free-form to edit safely → print the patch.
+ */
+export type PolarWebhookKind = "nextjs_helper" | "raw_validate";
+
+export interface PolarWebhookLocation {
+  /** Path to the file containing the handler, relative to projectRoot. */
+  file: string;
+  /** 1-based line number of the validation call. */
+  line: number;
+  framework: Framework | "unknown";
+  kind: PolarWebhookKind;
+  /** Human-readable description of where the trackSale call belongs. */
+  handlerHint: string;
+}
+
+/** The @polar-sh/nextjs route-factory usage (signature validation built in). */
+const POLAR_HELPER_IMPORT = "@polar-sh/nextjs";
+const POLAR_HELPER_NEEDLE = "Webhooks(";
+/** The raw Standard-Webhooks validation helper from @polar-sh/sdk/webhooks. */
+const POLAR_RAW_NEEDLE = "validateEvent(";
+
+function polarHintFor(kind: PolarWebhookKind): string {
+  return kind === "nextjs_helper"
+    ? "inside the Webhooks({ onOrderPaid }) callback — the payload is already signature-verified there"
+    : "after validateEvent verifies the payload, in your order.paid branch";
+}
+
+/**
+ * Scan the project for a Polar webhook handler. Prefers the `@polar-sh/nextjs`
+ * `Webhooks()` factory (the shape `onboard` can auto-edit); falls back to a raw
+ * `validateEvent` call. Returns null when neither is found.
+ */
+export function detectPolarWebhook(
+  projectRoot: string,
+  framework: Framework | "unknown" = "unknown",
+): PolarWebhookLocation | null {
+  const files: string[] = [];
+  collectSourceFiles(projectRoot, files);
+
+  let raw: PolarWebhookLocation | null = null;
+
+  for (const file of files) {
+    let content: string;
+    try {
+      content = readFileSync(file, "utf8");
+    } catch {
+      continue; // unreadable file — skip
+    }
+
+    const helperIdx =
+      content.includes(POLAR_HELPER_IMPORT) ? content.indexOf(POLAR_HELPER_NEEDLE) : -1;
+    if (helperIdx !== -1) {
+      return {
+        file: relative(projectRoot, file),
+        line: content.slice(0, helperIdx).split("\n").length,
+        framework,
+        kind: "nextjs_helper",
+        handlerHint: polarHintFor("nextjs_helper"),
+      };
+    }
+
+    // Remember the first raw handler, but keep scanning for a helper route.
+    if (!raw) {
+      const rawIdx = content.indexOf(POLAR_RAW_NEEDLE);
+      if (rawIdx !== -1) {
+        raw = {
+          file: relative(projectRoot, file),
+          line: content.slice(0, rawIdx).split("\n").length,
+          framework,
+          kind: "raw_validate",
+          handlerHint: polarHintFor("raw_validate"),
+        };
+      }
+    }
+  }
+
+  return raw;
+}

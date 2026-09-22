@@ -1,7 +1,7 @@
 {
   "name": "@affitor/recipes",
-  "version": "0.1.0",
-  "description": "Canonical per-stack payment-tracking recipe registry for Affitor — the single source of truth read by the CLI, the MCP server, and the docs. Pure data, no runtime deps.",
+  "version": "0.2.0",
+  "description": "Canonical per-stack payment-tracking recipe registry for Affitor \u2014 the single source of truth read by the CLI, the MCP server, and the docs. Pure data, no runtime deps.",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",

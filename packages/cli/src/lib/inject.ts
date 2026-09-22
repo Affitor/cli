@@ -185,6 +185,107 @@ function affitorImportLine(importSpecifier: string): string {
  * Returns `already` when a `affitor.trackSale(` / `@affitor/sdk/server` marker is
  * already present (idempotent re-runs do nothing).
  */
+// ── Server-side: inject `affitor.trackSale(...)` into a Polar webhook ──
+//
+// Same conservatism as the Stripe transform: we only auto-edit the ONE shape we
+// can place with certainty — the `@polar-sh/nextjs` `Webhooks({ onOrderPaid })`
+// route factory, whose callback receives an already-signature-verified payload.
+// Raw `validateEvent` handlers are free-form → `unrecognized` (the caller
+// prints the exact patch instead of guessing an edit site).
+
+export interface InjectPolarOpts {
+  /**
+   * The polar sale snippet from `@affitor/recipes` (`getRecipe(fw, 'polar',
+   * 's2s').sale!.snippet`). The `@affitor/sdk/server` import line is stripped;
+   * the body reads `order.*`, so the transform binds `const order =
+   * <payload>.data;` from the callback parameter before it.
+   */
+  saleSnippet: string;
+  /** Module specifier for the `affitor` client import (same as Stripe's). */
+  importSpecifier?: string;
+  /** Optional indent override for the inserted block (defaults to callback body). */
+  indent?: string;
+}
+
+/**
+ * Insert `affitor.trackSale(...)` into a `@polar-sh/nextjs` webhook route,
+ * inside the `onOrderPaid` callback (the payload is signature-verified there).
+ *
+ * CONSERVATIVE BY DESIGN — injects only when ALL of these hold (else
+ * `unrecognized`, and the caller prints the patch):
+ *   1. The file uses the `@polar-sh/nextjs` `Webhooks(` factory (verified
+ *      route). Raw `validateEvent` handlers are never auto-edited.
+ *   2. Exactly one `onOrderPaid` reference (unambiguous anchor).
+ *   3. The callback is a block-bodied arrow with a single simple parameter —
+ *      `onOrderPaid: async (payload) => {` — so we can bind
+ *      `const order = payload.data;` at a known indent. Destructured params or
+ *      expression bodies → unrecognized.
+ *   4. The file doesn't already bind `const order` (we'd shadow/collide).
+ *
+ * Returns `already` when a trackSale / server-import / client-import marker is
+ * present (idempotent re-runs are no-ops).
+ */
+export function injectPolarTrackSale(content: string, opts: InjectPolarOpts): InjectResult {
+  const clientImportLine = opts.importSpecifier ? affitorImportLine(opts.importSpecifier) : null;
+  if (
+    content.includes(TRACK_SALE_MARKER) ||
+    content.includes(SERVER_IMPORT_MARKER) ||
+    (clientImportLine && content.includes(clientImportLine))
+  ) {
+    return { content, status: "already", added: [] };
+  }
+
+  // (1) Must be the @polar-sh/nextjs Webhooks() factory (signature-verified).
+  if (!content.includes("@polar-sh/nextjs") || !content.includes("Webhooks(")) {
+    return { content, status: "unrecognized", added: [] };
+  }
+
+  // (2) Exactly one onOrderPaid reference to anchor on.
+  const anchors = content.match(/onOrderPaid/g);
+  if (!anchors || anchors.length !== 1) {
+    return { content, status: "unrecognized", added: [] };
+  }
+
+  // (3) A block-bodied arrow callback with one simple parameter (optionally
+  // typed inside the parens: `(payload: OrderPaidPayload) => {`).
+  const cbRe =
+    /^([ \t]*)onOrderPaid:\s*(?:async\s*)?\(?\s*([A-Za-z_$][\w$]*)\s*(?::\s*[^)=]+)?\)?\s*=>\s*\{/m;
+  const cb = content.match(cbRe);
+  if (!cb || cb.index === undefined) {
+    return { content, status: "unrecognized", added: [] };
+  }
+  const param = cb[2];
+
+  // (4) Never shadow/collide with an existing `order` binding.
+  if (content.includes("const order")) {
+    return { content, status: "unrecognized", added: [] };
+  }
+
+  const body = saleCallBody(opts.saleSnippet);
+  if (!body.includes(TRACK_SALE_MARKER)) {
+    return { content, status: "unrecognized", added: [] };
+  }
+
+  // Insert right after the callback's opening brace, one level deeper than the
+  // `onOrderPaid:` property line.
+  const braceEnd = cb.index + cb[0].length;
+  const indent = opts.indent ?? `${cb[1] ?? ""}  `;
+  const block = indentBody(body, indent);
+  const insertion =
+    `\n${indent}// Affitor: report the sale (auto-added by \`affitor onboard\`)` +
+    `\n${indent}const order = ${param}.data;\n${block}`;
+  const withSale = content.slice(0, braceEnd) + insertion + content.slice(braceEnd);
+
+  let finalContent = withSale;
+  const added = insertion.split("\n").filter((l) => l.trim().length > 0);
+  if (clientImportLine) {
+    finalContent = addImport(withSale, clientImportLine);
+    added.unshift(clientImportLine);
+  }
+
+  return { content: finalContent, status: "injected", added };
+}
+
 export function injectStripeTrackSale(content: string, opts: InjectStripeOpts): InjectResult {
   // Idempotent: never double-inject.
   // Check for trackSale marker, server import marker, OR the affitor client import

@@ -1,5 +1,14 @@
-import { input, select, confirm } from "@inquirer/prompts";
+import { input, select, confirm, password } from "@inquirer/prompts";
 import type { CommissionType } from "../types.js";
+
+/** Masked prompt for a Polar Organization Access Token (never echoed). */
+export async function promptPolarToken(sandbox: boolean): Promise<string> {
+  return password({
+    message: `Polar Organization Access Token${sandbox ? " (sandbox)" : ""}:`,
+    mask: "*",
+    validate: (v) => (v.trim().length > 0 ? true : "Token is required"),
+  });
+}
 
 export async function promptProgramName(): Promise<string> {
   return input({

@@ -5,12 +5,13 @@ import { readConfig, updateConfig, writeSecrets, readSecrets, ConfigNotFoundErro
 import { runStripeOAuth, StripeOAuthError } from "../lib/stripe-oauth.js";
 import { AffitorAPI, APIError, NetworkError } from "../lib/api-client.js";
 import { getFlags } from "../lib/flags.js";
+import { registerSetupPolarCommand } from "./setup-polar.js";
 import type { CLIFlags } from "../types.js";
 
 export function registerSetupCommand(program: Command) {
   const setup = program
     .command("setup")
-    .description("Set up integrations (stripe, dns)");
+    .description("Set up integrations (stripe, polar, dns)");
 
   setup
     .command("stripe")
@@ -20,6 +21,8 @@ export function registerSetupCommand(program: Command) {
     .action(async (opts, cmd) => {
       await runSetupStripe(opts, getFlags(cmd));
     });
+
+  registerSetupPolarCommand(setup);
 
   setup
     .command("dns")
@@ -95,7 +98,11 @@ async function runSetupStripe(
   }
 
   const apiUrl = flags.apiUrl ?? config.api_url;
-  const webhookUrl = `${apiUrl}/webhooks/stripe/${config.program_id}`;
+  // The CMS ingests ALL Stripe webhooks at one global route (it routes events by
+  // their content, not by a program id in the path). The old per-program path
+  // (`/webhooks/stripe/:programId`) never existed server-side — endpoints
+  // registered against it 404'd and every event was silently lost.
+  const webhookUrl = `${apiUrl}/api/webhook-distributor/stripe`;
 
   try {
     const totalSteps = 3;

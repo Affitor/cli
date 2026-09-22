@@ -10,8 +10,8 @@ import { resolveApiKey } from "../lib/config.js";
 import { confirmAction } from "../lib/prompts.js";
 import { detectStack, type Framework } from "../lib/stack-detect.js";
 import { detectPaymentProvider } from "../lib/server-tracking.js";
-import { detectStripeWebhook } from "../lib/webhook-detect.js";
-import { injectStripeTrackSale } from "../lib/inject.js";
+import { detectPolarWebhook, detectStripeWebhook } from "../lib/webhook-detect.js";
+import { injectPolarTrackSale, injectStripeTrackSale, type InjectResult } from "../lib/inject.js";
 import { runInstallWizard } from "../lib/wizard.js";
 import { DEFAULT_API_URL, type CLIFlags, type ReadinessResult, type TestChainStatus } from "../types.js";
 
@@ -169,30 +169,39 @@ interface WireSaleArgs {
 }
 
 /**
- * The safety-critical part: locate the Stripe webhook, run the PURE
- * `injectStripeTrackSale` transform, and:
+ * The safety-critical part: locate the provider webhook, run the PURE inject
+ * transform, and:
  *   - `injected`      → show the DIFF and confirm before writing.
  *   - `already`       → no-op (idempotent).
  *   - `unrecognized`  → PRINT the exact patch (snippet + inject_target + file:line).
- *   - no webhook      → PRINT the full recipe.
- * NEVER auto-edits when the structure isn't cleanly recognized.
+ *   - no webhook      → PRINT the full recipe (Polar: + point at `setup polar`).
+ * NEVER auto-edits when the structure isn't cleanly recognized. Stripe and
+ * Polar have auto-edit paths; other providers print the recipe.
  */
 async function wireServerSale(args: WireSaleArgs): Promise<OnboardStep> {
-  const { cwd, framework, provider, interactive, autoConfirm, json } = args;
+  const { framework, provider, json } = args;
 
-  // Only Stripe has the auto-edit path (the recipe's sale snippet is keyed to
-  // the verified checkout.session.completed event object). Other providers →
-  // print the recipe (no reliable inject site).
   // Use 's2s' mode so a sale snippet exists (Connect mode = metadata only).
   const mode: Mode = "s2s";
-  const recipe = getRecipe(toRecipeFramework(framework), provider === "stripe" ? "stripe" : "unknown", mode);
+  const recipeProvider =
+    provider === "stripe" || provider === "polar" ? provider : "unknown";
+  const recipe = getRecipe(toRecipeFramework(framework), recipeProvider, mode);
 
-  if (provider !== "stripe") {
-    if (!json) {
-      printRecipe(recipe, null, "Server-side sale (printed — review and add)");
-    }
-    return { step: "server_sale", status: "manual", detail: `provider=${provider}: printed recipe` };
+  if (provider === "stripe") return wireStripeSale(args, recipe);
+  if (provider === "polar") return wirePolarSale(args, recipe);
+
+  // Other providers → print the recipe (no reliable inject site).
+  if (!json) {
+    printRecipe(recipe, null, "Server-side sale (printed — review and add)");
   }
+  return { step: "server_sale", status: "manual", detail: `provider=${provider}: printed recipe` };
+}
+
+async function wireStripeSale(
+  args: WireSaleArgs,
+  recipe: ReturnType<typeof getRecipe>,
+): Promise<OnboardStep> {
+  const { cwd, framework, json } = args;
 
   const hook = detectStripeWebhook(cwd, framework);
 
@@ -212,9 +221,82 @@ async function wireServerSale(args: WireSaleArgs): Promise<OnboardStep> {
     return { step: "server_sale", status: "manual", detail: `unreadable ${hook.file}: printed recipe` };
   }
 
-  // Compute the import specifier from the webhook file's directory to the
-  // scaffolded server client (lib/affitor.ts or src/lib/affitor.ts).
-  // Mirror the path logic from wizard.ts: prefer src/lib when src/ exists.
+  const importSpecifier = computeImportSpecifier(cwd, fileAbs);
+  const saleSnippet = recipe.sale?.snippet ?? "";
+  const result = injectStripeTrackSale(original, { saleSnippet, importSpecifier });
+
+  return applyInjectResult(args, recipe, hook, fileAbs, result, "Stripe");
+}
+
+/**
+ * Polar mirror of the Stripe path. The auto-edit only targets the
+ * `@polar-sh/nextjs` `Webhooks({ onOrderPaid })` helper route (the payload is
+ * signature-verified inside it); raw `validateEvent` handlers get the printed
+ * patch. When NO webhook route exists at all, the fix isn't a paste — it's
+ * `affitor setup polar` (creates the Polar endpoint + generates the route), so
+ * point there.
+ */
+async function wirePolarSale(
+  args: WireSaleArgs,
+  recipe: ReturnType<typeof getRecipe>,
+): Promise<OnboardStep> {
+  const { cwd, framework, json } = args;
+
+  const hook = detectPolarWebhook(cwd, framework);
+
+  if (!hook) {
+    if (!json) {
+      printRecipe(recipe, null, "Polar sale (no webhook route found)");
+      logger.info(
+        `  ${format.bold("Tip:")} run ${format.cyan("npx affitor setup polar")} — it creates the Polar webhook`,
+      );
+      logger.info(`  endpoint on your org and generates this route wired for Affitor.`);
+      logger.newline();
+    }
+    return {
+      step: "server_sale",
+      status: "manual",
+      detail: "no polar webhook route found: run `affitor setup polar`",
+    };
+  }
+
+  if (hook.kind === "raw_validate") {
+    // A hand-rolled validateEvent handler — too free-form to edit payment code.
+    if (!json) {
+      logger.warn(
+        `Found your Polar webhook (${format.green(`${hook.file}:${hook.line}`)}) — a raw validateEvent handler we won't auto-edit.`,
+      );
+      printRecipe(recipe, hook, "Add the sale call yourself (exact patch)");
+    }
+    return {
+      step: "server_sale",
+      status: "manual",
+      detail: `raw validateEvent handler in ${hook.file}: printed patch`,
+    };
+  }
+
+  const fileAbs = join(cwd, hook.file);
+  let original: string;
+  try {
+    original = readFileSync(fileAbs, "utf8");
+  } catch {
+    if (!json) printRecipe(recipe, hook, "Polar sale (couldn't read the webhook file — add manually)");
+    return { step: "server_sale", status: "manual", detail: `unreadable ${hook.file}: printed recipe` };
+  }
+
+  const importSpecifier = computeImportSpecifier(cwd, fileAbs);
+  const saleSnippet = recipe.sale?.snippet ?? "";
+  const result = injectPolarTrackSale(original, { saleSnippet, importSpecifier });
+
+  return applyInjectResult(args, recipe, hook, fileAbs, result, "Polar");
+}
+
+/**
+ * Compute the import specifier from the webhook file's directory to the
+ * scaffolded server client (lib/affitor.ts or src/lib/affitor.ts).
+ * Mirror the path logic from wizard.ts: prefer src/lib when src/ exists.
+ */
+function computeImportSpecifier(cwd: string, fileAbs: string): string {
   const clientDir = existsSync(join(cwd, "src")) ? join(cwd, "src", "lib") : join(cwd, "lib");
   const clientAbs = join(clientDir, "affitor.ts");
   const webhookDir = dirname(fileAbs);
@@ -222,9 +304,23 @@ async function wireServerSale(args: WireSaleArgs): Promise<OnboardStep> {
   // Ensure POSIX separators and a leading ./ or ../
   importSpecifier = importSpecifier.replace(/\\/g, "/");
   if (!importSpecifier.startsWith(".")) importSpecifier = `./${importSpecifier}`;
+  return importSpecifier;
+}
 
-  const saleSnippet = recipe.sale?.snippet ?? "";
-  const result = injectStripeTrackSale(original, { saleSnippet, importSpecifier });
+/**
+ * Shared tail of the Stripe/Polar auto-edit paths: handle the transform verdict
+ * (already / unrecognized / injected → DIFF + confirm → write). `--json` mode
+ * never edits files — the step is reported `manual` so agents drive the edit.
+ */
+async function applyInjectResult(
+  args: WireSaleArgs,
+  recipe: ReturnType<typeof getRecipe>,
+  hook: { file: string; line: number; handlerHint: string },
+  fileAbs: string,
+  result: InjectResult,
+  providerLabel: string,
+): Promise<OnboardStep> {
+  const { interactive, autoConfirm, json } = args;
 
   if (result.status === "already") {
     if (!json) logger.step(`${hook.file} already reports the sale — skipped`);
@@ -235,7 +331,7 @@ async function wireServerSale(args: WireSaleArgs): Promise<OnboardStep> {
     // NEVER force-edit payment code we can't place confidently — print the patch.
     if (!json) {
       logger.warn(
-        `Found your Stripe webhook (${format.green(`${hook.file}:${hook.line}`)}) but couldn't place the sale call safely.`,
+        `Found your ${providerLabel} webhook (${format.green(`${hook.file}:${hook.line}`)}) but couldn't place the sale call safely.`,
       );
       printRecipe(recipe, hook, "Add the sale call yourself (exact patch)");
     }
@@ -255,7 +351,7 @@ async function wireServerSale(args: WireSaleArgs): Promise<OnboardStep> {
   if (!ok) {
     if (!json) {
       logger.step("Skipped. Add the sale call when ready:");
-      printRecipe(recipe, hook, "Stripe sale (skipped — add manually)");
+      printRecipe(recipe, hook, `${providerLabel} sale (skipped — add manually)`);
     }
     return { step: "server_sale", status: "skipped", detail: `${hook.file}: user declined` };
   }

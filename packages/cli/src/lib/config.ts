@@ -89,6 +89,7 @@ export function readSecrets(cwd?: string): AffitorSecrets | null {
     api_key: vars.AFFITOR_API_KEY,
     program_id: vars.AFFITOR_PROGRAM_ID ?? "",
     stripe_account_id: vars.STRIPE_CONNECTED_ACCOUNT_ID,
+    polar_webhook_secret: vars.POLAR_WEBHOOK_SECRET,
   };
 }
 
@@ -105,6 +106,9 @@ export function writeSecrets(secrets: AffitorSecrets, cwd?: string): void {
   ];
   if (secrets.stripe_account_id) {
     lines.push(`STRIPE_CONNECTED_ACCOUNT_ID=${secrets.stripe_account_id}`);
+  }
+  if (secrets.polar_webhook_secret) {
+    lines.push(`POLAR_WEBHOOK_SECRET=${secrets.polar_webhook_secret}`);
   }
   lines.push("");
 
