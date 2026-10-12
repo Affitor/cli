@@ -32,17 +32,20 @@ Restart your client and the `affitor` tools will be available to the agent.
 | ------------------ | -------- | --------------------------------------------------------------------------- |
 | `AFFITOR_API_KEY`  | Yes      | Your Affitor **program API key** (Bearer). Server-side only — never ship it to a browser. |
 | `AFFITOR_API_URL`  | No       | API base override. Defaults to `https://api.affitor.com`.                    |
+| `AFFITOR_MCP_WRITE` | No      | Set to `1` to register the two tools that move money: `affitor_track_sale` and `affitor_track_refund`. Off by default, so an agent exploring tools cannot create a real sale or reverse a commission. |
 
 If `AFFITOR_API_KEY` is not set, the server prints a clear message to stderr and exits.
 
 ## Tools
 
+Every tool carries MCP annotations (`readOnlyHint`, `destructiveHint`, `idempotentHint`), so a client can ask before a write. `affitor_track_sale` and `affitor_track_refund` are marked destructive and only exist with `AFFITOR_MCP_WRITE=1`.
+
 | Tool                            | Description                                                                                                                              |
 | ------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
 | `affitor_readiness`             | Check this program's integration/onboarding readiness — returns a 5-gate verdict + blocker + next_action. Poll until `integration_verified` is true. |
 | `affitor_track_lead`            | Report a lead/signup. Binds the customer to the click so later sales attribute by `customerExternalId` alone.                            |
-| `affitor_track_sale`            | Report a sale. Resolves attribution by `customerExternalId` (bound at lead time).                                                        |
-| `affitor_track_refund`          | Report a refund (omit amount = full → commission reversed; partial → refunded). Idempotent by `invoiceId`.                               |
+| `affitor_track_sale`            | Needs `AFFITOR_MCP_WRITE=1`. Report a sale: creates a real sale and commission unless `testMode` is true. Resolves attribution by `customerExternalId` (bound at lead time). |
+| `affitor_track_refund`          | Needs `AFFITOR_MCP_WRITE=1`. Report a refund (omit amount = full → commission reversed; partial → refunded). Idempotent by `invoiceId`. `testMode` is a dry run. |
 | `affitor_track_click`           | Report a click (usually browser-side; public, no customer needed).                                                                       |
 | `affitor_get_integration_plan`  | Return the deterministic payment-tracking integration plan for a stack — install, checkout-metadata snippet, `trackSale` snippet + where to inject it, and the verify step. **Pure** — reads the canonical [`@affitor/recipes`](https://www.npmjs.com/package/@affitor/recipes) registry; no SDK client, no network, no side-effects. The agent follows this instead of guessing a contract. |
 | `affitor_run_verification`      | Fire the synthetic click → lead → sale verification chain through Affitor's REAL attribution pipeline (isolated `is_test` rows). The agent's proof step: run it, then poll `affitor_readiness` until `integration_verified` is true. Rate-limited to **10/program/hour** — on a `rate_limited` result, wait `retry_after_seconds`, don't hammer. |
@@ -56,6 +59,7 @@ If `AFFITOR_API_KEY` is not set, the server prints a clear message to stderr and
 - `customerExternalId?: string` — your own user id; binds this customer to the click.
 - `clickId?: string` — Affitor click id (from the `affitor_click_id` cookie).
 - `email?: string`
+- `testMode?: boolean` — record a test lead (`is_test`).
 
 **`affitor_track_sale`** (one of `customerExternalId` / `clickId` is required)
 - `customerExternalId?: string` — your own user id; resolves attribution (no `clickId` needed once bound at lead time).
@@ -67,11 +71,13 @@ If `AFFITOR_API_KEY` is not set, the server prints a clear message to stderr and
 - `isRecurring?: boolean`
 - `subscriptionId?: string`
 - `subscriptionInterval?: "monthly" | "quarterly" | "annual"`
+- `testMode?: boolean` — record a test sale (`is_test`, no commission), sent as transaction `test_<invoiceId>` so it never blocks the real sale with the same invoice.
 
 **`affitor_track_refund`**
 - `invoiceId: string` — the sale's idempotency key (the `invoiceId` you passed to `affitor_track_sale`).
 - `refundAmountCents?: number` — integer cents. Omit (or `0`) = full refund → commission reversed; partial → refunded.
 - `refundReason?: string`
+- `testMode?: boolean` — dry run: returns the refund that would be sent and calls nothing (the API has no test refunds).
 
 **`affitor_track_click`** (all optional)
 - `affiliateUrl?: string`

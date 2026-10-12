@@ -9,6 +9,11 @@
  * It wraps the consolidated server client `@affitor/sdk/server` (the `Affitor`
  * class). Auth is the program API key, read from the `AFFITOR_API_KEY` env var.
  *
+ * The two tools that move money (`affitor_track_sale`, `affitor_track_refund`)
+ * are only registered when `AFFITOR_MCP_WRITE=1`: an agent exploring tools must
+ * not be able to create a real sale or reverse a commission by accident. Every
+ * tool carries MCP annotations so clients can ask before a write.
+ *
  *   {
  *     "mcpServers": {
  *       "affitor": {
@@ -116,21 +121,81 @@ export async function fireVerificationChain(apiKey: string, apiUrl: string): Pro
   return { http_status: res.status, ...body };
 }
 
+/** The sale fields a test sale sends; same names as `affitor_track_sale`. */
+export interface TestSaleInput {
+  customerExternalId?: string;
+  clickId?: string;
+  amount: number;
+  invoiceId: string;
+  currency?: string;
+  saleType?: 'payment' | 'subscription';
+  isRecurring?: boolean;
+  subscriptionId?: string;
+  subscriptionInterval?: 'monthly' | 'quarterly' | 'annual';
+}
+
+/** Records a test sale (`is_test`, no commission). Injected so it stays unit-testable. */
+export type TrackTestSale = (input: TestSaleInput) => Promise<unknown>;
+
+export interface RegisterOptions {
+  /** Register the money-moving tools (`affitor_track_sale`, `affitor_track_refund`). */
+  allowWrites?: boolean;
+  /** Used by `affitor_track_sale` when `testMode` is true. */
+  trackTestSale?: TrackTestSale;
+}
+
 /**
- * Register the 7 Affitor tools on an MCP server. Exported for unit testing the
+ * POST `{base}/api/v1/track/sale` with `additional_data.test_mode`, which the API
+ * records as an `is_test` sale with no commission. The SDK's `trackSale` has no
+ * test-mode field, so this call is made directly, like `fireVerificationChain`.
+ * Resolves to the SDK-shaped `{ ok, status, data }` so `runCall` treats both alike.
+ *
+ * The transaction id is sent as `test_<invoiceId>`: the API's duplicate check does
+ * not skip test rows, so a test sale under the real id would make the real sale
+ * with that invoice answer 409 and never create its commission.
+ */
+export const TEST_TRANSACTION_PREFIX = 'test_';
+
+export async function postTestSale(apiKey: string, apiUrl: string, input: TestSaleInput): Promise<unknown> {
+  const body: Record<string, unknown> = {
+    customer_key: input.customerExternalId,
+    click_id: input.clickId,
+    amount_cents: input.amount,
+    transaction_id: `${TEST_TRANSACTION_PREFIX}${input.invoiceId}`,
+    currency: input.currency,
+    sale_type: input.saleType,
+    is_recurring: input.isRecurring,
+    subscription_id: input.subscriptionId,
+    subscription_interval: input.subscriptionInterval,
+    additional_data: { test_mode: true },
+  };
+  for (const key of Object.keys(body)) if (body[key] === undefined) delete body[key];
+
+  const res = await fetch(`${apiUrl}/api/v1/track/sale`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  const data = (await res.json().catch(() => null)) as Record<string, unknown> | null;
+  const error = res.ok ? undefined : String((data && (data.error as string)) || `HTTP ${res.status}`);
+  return { ok: res.ok, status: res.status, data, ...(error ? { error } : {}) };
+}
+
+/**
+ * Register the Affitor tools on an MCP server. Exported for unit testing the
  * handlers with a stubbed `Affitor` client.
  *
- * Five tools wrap the `Affitor` client (readiness + track*). The sixth,
- * `affitor_get_integration_plan`, is PURE — it reads the canonical recipe
- * registry (`@affitor/recipes`) and never touches the client or the network.
- * The seventh, `affitor_run_verification`, fires the synthetic verification
- * chain via the injected `runVerification` (omitted → the tool degrades to a
- * "not configured" failure).
+ * Always registered (5): readiness, track_lead, track_click, the PURE
+ * `affitor_get_integration_plan` (reads `@affitor/recipes`, no client, no
+ * network) and `affitor_run_verification`, which fires the synthetic
+ * verification chain via the injected `runVerification` (omitted → a "not
+ * configured" failure). With `allowWrites` (2 more): track_sale and track_refund.
  */
 export function registerTools(
   server: McpServer,
   affitor: AffitorLike,
   runVerification?: RunVerification,
+  options: RegisterOptions = {},
 ): void {
   server.registerTool(
     'affitor_readiness',
@@ -143,6 +208,8 @@ export function registerTools(
           .optional()
           .describe('Force a fresh server-side recheck instead of returning the cached verdict.'),
       },
+      // Reads only, but the server-side check fetches the brand's own site to look for the tracker.
+      annotations: { title: 'Check readiness', readOnlyHint: true, idempotentHint: true, openWorldHint: true },
     },
     async (args) => runCall(() => affitor.readiness({ forceRecheck: args.forceRecheck })),
   );
@@ -162,7 +229,12 @@ export function registerTools(
           .optional()
           .describe('Affitor click id (from the `affitor_click_id` cookie). One of clickId / customerExternalId is required.'),
         email: z.string().optional().describe("The lead's email address."),
+        testMode: z
+          .boolean()
+          .optional()
+          .describe('Record a test lead (is_test) instead of a real one.'),
       },
+      annotations: { title: 'Report a lead', readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
     },
     async (args) => {
       if (!args.customerExternalId && !args.clickId) {
@@ -173,79 +245,13 @@ export function registerTools(
           customerExternalId: args.customerExternalId,
           clickId: args.clickId,
           email: args.email,
+          ...(args.testMode ? { additionalData: { test_mode: true } } : {}),
         }),
       );
     },
   );
 
-  server.registerTool(
-    'affitor_track_sale',
-    {
-      description:
-        'Report a sale. Resolves attribution by customerExternalId (bound at lead time).',
-      inputSchema: {
-        customerExternalId: z
-          .string()
-          .optional()
-          .describe("Advertiser's own user id — resolves attribution (no clickId needed once bound at lead time). One of customerExternalId / clickId is required."),
-        clickId: z.string().optional().describe('Affitor click id. One of clickId / customerExternalId is required.'),
-        amount: z.number().int().positive().describe('Sale amount in integer cents (e.g. 4999 = $49.99).'),
-        invoiceId: z.string().describe('Idempotency key — dedups retries (your invoice/transaction id).'),
-        currency: z.string().optional().describe('ISO currency code (default USD).'),
-        saleType: z.enum(['payment', 'subscription']).optional().describe('Whether this is a one-off payment or a subscription.'),
-        isRecurring: z.boolean().optional().describe('Whether this sale recurs (subscription renewal).'),
-        subscriptionId: z.string().optional().describe('Provider subscription id, if applicable.'),
-        subscriptionInterval: z
-          .enum(['monthly', 'quarterly', 'annual'])
-          .optional()
-          .describe('Billing interval for a subscription sale.'),
-      },
-    },
-    async (args) => {
-      if (!args.customerExternalId && !args.clickId) {
-        return fail('affitor_track_sale: `customerExternalId` or `clickId` is required');
-      }
-      return runCall(() =>
-        affitor.trackSale({
-          customerExternalId: args.customerExternalId,
-          clickId: args.clickId,
-          amount: args.amount,
-          invoiceId: args.invoiceId,
-          currency: args.currency,
-          saleType: args.saleType,
-          isRecurring: args.isRecurring,
-          subscriptionId: args.subscriptionId,
-          subscriptionInterval: args.subscriptionInterval,
-        }),
-      );
-    },
-  );
-
-  server.registerTool(
-    'affitor_track_refund',
-    {
-      description:
-        'Report a refund (omit amount = full → commission reversed; partial → refunded). Idempotent by invoiceId.',
-      inputSchema: {
-        invoiceId: z.string().describe('The sale\'s idempotency key (the `invoiceId` you passed to affitor_track_sale).'),
-        refundAmountCents: z
-          .number()
-          .int()
-          .nonnegative()
-          .optional()
-          .describe('Refund amount in integer cents. Omit (or 0) = full refund → commission reversed; partial → refunded.'),
-        refundReason: z.string().optional().describe('Optional human-readable refund reason.'),
-      },
-    },
-    async (args) =>
-      runCall(() =>
-        affitor.trackRefund({
-          invoiceId: args.invoiceId,
-          refundAmountCents: args.refundAmountCents,
-          refundReason: args.refundReason,
-        }),
-      ),
-  );
+  if (options.allowWrites) registerWriteTools(server, affitor, options.trackTestSale);
 
   server.registerTool(
     'affitor_track_click',
@@ -257,6 +263,7 @@ export function registerTools(
         referrerUrl: z.string().optional().describe('The HTTP referrer URL, if any.'),
         existingClickId: z.string().optional().describe('Reuse an existing Affitor click id instead of minting a new one.'),
       },
+      annotations: { title: 'Report a click', readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
     },
     async (args) =>
       runCall(() =>
@@ -268,7 +275,6 @@ export function registerTools(
         }),
       ),
   );
-
   server.registerTool(
     'affitor_get_integration_plan',
     {
@@ -290,6 +296,7 @@ export function registerTools(
             "Payment-tracking mode. 'stripe_connect' (default) = Connect autocaptures the sale (metadata only, no trackSale); 's2s' = inject trackSale in your webhook.",
           ),
       },
+      annotations: { title: 'Get the integration plan', readOnlyHint: true, idempotentHint: true, openWorldHint: false },
     },
     async (args) => {
       // Pure: reads the canonical recipe registry. No SDK client, no network.
@@ -308,12 +315,104 @@ export function registerTools(
       description:
         "Fire the synthetic click->lead->sale verification chain through Affitor's REAL attribution pipeline (isolated is_test rows). This is the agent's PROOF step: run it, then poll affitor_readiness until integration_verified:true. Rate-limited to 10/program/hour — on a rate_limited result, wait retry_after_seconds, don't hammer.",
       inputSchema: {},
+      annotations: { title: 'Run the verification chain', readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
     },
     async () => {
       if (!runVerification) {
         return fail('affitor_run_verification is not configured in this MCP build');
       }
       return runCall(() => runVerification());
+    },
+  );
+}
+
+/**
+ * The two tools that move money. Registered only with `allowWrites`
+ * (`AFFITOR_MCP_WRITE=1`). `testMode` records an `is_test` sale with no
+ * commission; for refunds the API has no test mode, so `testMode` returns what
+ * would be sent without calling it.
+ */
+function registerWriteTools(server: McpServer, affitor: AffitorLike, trackTestSale?: TrackTestSale): void {
+  server.registerTool(
+    'affitor_track_sale',
+    {
+      description:
+        'Report a sale. Creates a REAL sale and commission unless testMode is true. Resolves attribution by customerExternalId (bound at lead time).',
+      inputSchema: {
+        customerExternalId: z
+          .string()
+          .optional()
+          .describe("Advertiser's own user id — resolves attribution (no clickId needed once bound at lead time). One of customerExternalId / clickId is required."),
+        clickId: z.string().optional().describe('Affitor click id. One of clickId / customerExternalId is required.'),
+        amount: z.number().int().positive().describe('Sale amount in integer cents (e.g. 4999 = $49.99).'),
+        invoiceId: z.string().min(1).describe('Idempotency key — dedups retries (your invoice/transaction id).'),
+        currency: z.string().optional().describe('ISO currency code (default USD).'),
+        saleType: z.enum(['payment', 'subscription']).optional().describe('Whether this is a one-off payment or a subscription.'),
+        isRecurring: z.boolean().optional().describe('Whether this sale recurs (subscription renewal).'),
+        subscriptionId: z.string().optional().describe('Provider subscription id, if applicable.'),
+        subscriptionInterval: z
+          .enum(['monthly', 'quarterly', 'annual'])
+          .optional()
+          .describe('Billing interval for a subscription sale.'),
+        testMode: z
+          .boolean()
+          .optional()
+          .describe('Record a test sale (is_test, no commission) instead of a real one.'),
+      },
+      annotations: { title: 'Report a sale', readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
+    },
+    async (args) => {
+      if (!args.customerExternalId && !args.clickId) {
+        return fail('affitor_track_sale: `customerExternalId` or `clickId` is required');
+      }
+      const input: TestSaleInput = {
+        customerExternalId: args.customerExternalId,
+        clickId: args.clickId,
+        amount: args.amount,
+        invoiceId: args.invoiceId,
+        currency: args.currency,
+        saleType: args.saleType,
+        isRecurring: args.isRecurring,
+        subscriptionId: args.subscriptionId,
+        subscriptionInterval: args.subscriptionInterval,
+      };
+      if (args.testMode) {
+        if (!trackTestSale) return fail('affitor_track_sale: testMode is not configured in this MCP build');
+        return runCall(() => trackTestSale(input));
+      }
+      return runCall(() => affitor.trackSale(input));
+    },
+  );
+
+  server.registerTool(
+    'affitor_track_refund',
+    {
+      description:
+        'Report a refund (omit amount = full → commission reversed; partial → refunded). Idempotent by invoiceId. With testMode, returns what would be sent and calls nothing.',
+      inputSchema: {
+        invoiceId: z.string().min(1).describe('The sale\'s idempotency key (the `invoiceId` you passed to affitor_track_sale).'),
+        refundAmountCents: z
+          .number()
+          .int()
+          .nonnegative()
+          .optional()
+          .describe('Refund amount in integer cents. Omit (or 0) = full refund → commission reversed; partial → refunded.'),
+        refundReason: z.string().optional().describe('Optional human-readable refund reason.'),
+        testMode: z
+          .boolean()
+          .optional()
+          .describe('Dry run: return the refund that would be sent, without calling the API.'),
+      },
+      annotations: { title: 'Report a refund', readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
+    },
+    async (args) => {
+      const input = {
+        invoiceId: args.invoiceId,
+        refundAmountCents: args.refundAmountCents,
+        refundReason: args.refundReason,
+      };
+      if (args.testMode) return ok({ dry_run: true, would_send: input });
+      return runCall(() => affitor.trackRefund(input));
     },
   );
 }
@@ -350,8 +449,14 @@ async function main(): Promise<void> {
   const runVerification: RunVerification = () =>
     fireVerificationChain(apiKey, apiUrl ?? 'https://api.affitor.com');
 
+  // AFFITOR_MCP_WRITE=1 registers the tools that move money (track_sale, track_refund).
+
+  const baseUrl = apiUrl ?? 'https://api.affitor.com';
   const server = new McpServer({ name: 'affitor', version: SERVER_VERSION });
-  registerTools(server, affitor, runVerification);
+  registerTools(server, affitor, runVerification, {
+    allowWrites: process.env.AFFITOR_MCP_WRITE === '1',
+    trackTestSale: (input) => postTestSale(apiKey, baseUrl, input),
+  });
 
   const transport = new StdioServerTransport();
   await server.connect(transport);
