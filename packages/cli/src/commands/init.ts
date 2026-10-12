@@ -289,7 +289,7 @@ export async function runInit(
   ]);
 
   logger.info(`  ${format.dim("Files:")} .affitor/config.json  ·  .env  ·  AGENTS.md  ·  .env.example`);
-  logger.info(`  ${format.dim("Docs:")} https://docs.affitor.com/advertisers/tracking`);
+  logger.info(`  ${format.dim("Docs:")} https://affitor.com/docs/brand/tracking/tracking-overview`);
   logger.newline();
 }
 
