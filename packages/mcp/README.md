@@ -71,7 +71,7 @@ Every tool carries MCP annotations (`readOnlyHint`, `destructiveHint`, `idempote
 - `isRecurring?: boolean`
 - `subscriptionId?: string`
 - `subscriptionInterval?: "monthly" | "quarterly" | "annual"`
-- `testMode?: boolean` — record a test sale (`is_test`, no commission).
+- `testMode?: boolean` — record a test sale (`is_test`, no commission), sent as transaction `test_<invoiceId>` so it never blocks the real sale with the same invoice.
 
 **`affitor_track_refund`**
 - `invoiceId: string` — the sale's idempotency key (the `invoiceId` you passed to `affitor_track_sale`).

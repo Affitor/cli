@@ -149,13 +149,19 @@ export interface RegisterOptions {
  * records as an `is_test` sale with no commission. The SDK's `trackSale` has no
  * test-mode field, so this call is made directly, like `fireVerificationChain`.
  * Resolves to the SDK-shaped `{ ok, status, data }` so `runCall` treats both alike.
+ *
+ * The transaction id is sent as `test_<invoiceId>`: the API's duplicate check does
+ * not skip test rows, so a test sale under the real id would make the real sale
+ * with that invoice answer 409 and never create its commission.
  */
+export const TEST_TRANSACTION_PREFIX = 'test_';
+
 export async function postTestSale(apiKey: string, apiUrl: string, input: TestSaleInput): Promise<unknown> {
   const body: Record<string, unknown> = {
     customer_key: input.customerExternalId,
     click_id: input.clickId,
     amount_cents: input.amount,
-    transaction_id: input.invoiceId,
+    transaction_id: `${TEST_TRANSACTION_PREFIX}${input.invoiceId}`,
     currency: input.currency,
     sale_type: input.saleType,
     is_recurring: input.isRecurring,
@@ -202,7 +208,8 @@ export function registerTools(
           .optional()
           .describe('Force a fresh server-side recheck instead of returning the cached verdict.'),
       },
-      annotations: { title: 'Check readiness', readOnlyHint: true, idempotentHint: true, openWorldHint: false },
+      // Reads only, but the server-side check fetches the brand's own site to look for the tracker.
+      annotations: { title: 'Check readiness', readOnlyHint: true, idempotentHint: true, openWorldHint: true },
     },
     async (args) => runCall(() => affitor.readiness({ forceRecheck: args.forceRecheck })),
   );
@@ -338,7 +345,7 @@ function registerWriteTools(server: McpServer, affitor: AffitorLike, trackTestSa
           .describe("Advertiser's own user id — resolves attribution (no clickId needed once bound at lead time). One of customerExternalId / clickId is required."),
         clickId: z.string().optional().describe('Affitor click id. One of clickId / customerExternalId is required.'),
         amount: z.number().int().positive().describe('Sale amount in integer cents (e.g. 4999 = $49.99).'),
-        invoiceId: z.string().describe('Idempotency key — dedups retries (your invoice/transaction id).'),
+        invoiceId: z.string().min(1).describe('Idempotency key — dedups retries (your invoice/transaction id).'),
         currency: z.string().optional().describe('ISO currency code (default USD).'),
         saleType: z.enum(['payment', 'subscription']).optional().describe('Whether this is a one-off payment or a subscription.'),
         isRecurring: z.boolean().optional().describe('Whether this sale recurs (subscription renewal).'),
@@ -383,7 +390,7 @@ function registerWriteTools(server: McpServer, affitor: AffitorLike, trackTestSa
       description:
         'Report a refund (omit amount = full → commission reversed; partial → refunded). Idempotent by invoiceId. With testMode, returns what would be sent and calls nothing.',
       inputSchema: {
-        invoiceId: z.string().describe('The sale\'s idempotency key (the `invoiceId` you passed to affitor_track_sale).'),
+        invoiceId: z.string().min(1).describe('The sale\'s idempotency key (the `invoiceId` you passed to affitor_track_sale).'),
         refundAmountCents: z
           .number()
           .int()
