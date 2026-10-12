@@ -68,7 +68,7 @@ const ROTATION_WARNING = {
   message: "This API key must be replaced by 2026-10-03.",
   hint: "Create a new key in Affitor → Settings → API Key, then update AFFITOR_API_KEY on your server.",
   rotate_by: "2026-10-03T00:00:00Z",
-  docs_url: "https://docs.affitor.com/api-reference/errors#api_key_rotation_required",
+  docs_url: "https://affitor.com/docs/api-reference/errors#api_key_rotation_required",
 };
 
 /** A fresh client, the way each command run builds exactly one. */
@@ -81,7 +81,7 @@ const ROTATION_ERROR = {
     code: "api_key_rotation_required",
     message: "This API key was retired on 2026-10-03.",
     hint: "Create a new key in Affitor → Settings → API Key.",
-    docs_url: "https://docs.affitor.com/api-reference/errors#api_key_rotation_required",
+    docs_url: "https://affitor.com/docs/api-reference/errors#api_key_rotation_required",
   },
 };
 
@@ -234,7 +234,7 @@ describe("AffitorAPI key-rotation signal", () => {
 // 401 after the deadline — where the body is a bare error envelope and `warnings[]`
 // is gone. They are the only rotation signal left in that case (W37-1362).
 const ROTATION_DOCS_URL =
-  "https://docs.affitor.com/api-reference/errors#api_key_rotation_required";
+  "https://affitor.com/docs/api-reference/errors#api_key_rotation_required";
 const ROTATION_HEADERS = {
   Deprecation: "@1790035200",
   Sunset: "Sat, 03 Oct 2026 00:00:00 GMT",
