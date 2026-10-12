@@ -6,20 +6,20 @@ import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { Affitor } from '@affitor/sdk/server';
-import { registerTools, type AffitorLike } from '../src/index.js';
+import { registerTools, postTestSale, type AffitorLike } from '../src/index.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SERVER_ENTRY = resolve(__dirname, '../dist/index.js');
 
-const EXPECTED_TOOLS = [
+// Registered by default. The two money tools need AFFITOR_MCP_WRITE=1.
+const DEFAULT_TOOLS = [
   'affitor_readiness',
   'affitor_track_lead',
-  'affitor_track_sale',
-  'affitor_track_refund',
   'affitor_track_click',
   'affitor_get_integration_plan',
   'affitor_run_verification',
 ] as const;
+const WRITE_TOOLS = ['affitor_track_sale', 'affitor_track_refund'] as const;
 
 // ── 1. Integration: spawn the BUILT server over stdio, drive with MCP Client ──
 describe('@affitor/mcp stdio server (spawned, built dist)', () => {
@@ -30,7 +30,7 @@ describe('@affitor/mcp stdio server (spawned, built dist)', () => {
     transport = new StdioClientTransport({
       command: process.execPath, // node
       args: [SERVER_ENTRY],
-      env: { AFFITOR_API_KEY: 'test_key', AFFITOR_API_URL: 'http://127.0.0.1:1' },
+      env: { AFFITOR_API_KEY: 'test_key', AFFITOR_API_URL: 'http://127.0.0.1:1', AFFITOR_MCP_WRITE: '1' },
     });
     client = new Client({ name: 'test-client', version: '0.0.0' });
     // connect() performs the MCP `initialize` handshake.
@@ -46,16 +46,23 @@ describe('@affitor/mcp stdio server (spawned, built dist)', () => {
     expect(info?.name).toBe('affitor');
   });
 
-  it('tools/list returns the 7 tools with input schemas', async () => {
+  it('with AFFITOR_MCP_WRITE=1, tools/list returns all 7 tools, each annotated', async () => {
     const { tools } = await client.listTools();
     const names = tools.map((t) => t.name).sort();
-    expect(names).toEqual([...EXPECTED_TOOLS].sort());
+    expect(names).toEqual([...DEFAULT_TOOLS, ...WRITE_TOOLS].sort());
 
     for (const tool of tools) {
       expect(tool.description, `${tool.name} description`).toBeTruthy();
       expect(tool.inputSchema, `${tool.name} inputSchema`).toBeTruthy();
       expect(tool.inputSchema.type).toBe('object');
+      expect(typeof tool.annotations?.readOnlyHint, `${tool.name} readOnlyHint`).toBe('boolean');
     }
+    for (const name of WRITE_TOOLS) {
+      const tool = tools.find((t) => t.name === name)!;
+      expect(tool.annotations).toMatchObject({ readOnlyHint: false, destructiveHint: true });
+    }
+    expect(tools.find((t) => t.name === 'affitor_readiness')!.annotations?.readOnlyHint).toBe(true);
+    expect(tools.find((t) => t.name === 'affitor_get_integration_plan')!.annotations?.readOnlyHint).toBe(true);
 
     // Spot-check that affitor_track_sale exposes its key fields in the schema.
     const sale = tools.find((t) => t.name === 'affitor_track_sale')!;
@@ -64,6 +71,36 @@ describe('@affitor/mcp stdio server (spawned, built dist)', () => {
       expect.arrayContaining(['customerExternalId', 'clickId', 'amount', 'invoiceId', 'currency']),
     );
     expect((sale.inputSchema.required as string[]) ?? []).toContain('invoiceId');
+  });
+});
+
+describe('@affitor/mcp stdio server without AFFITOR_MCP_WRITE', () => {
+  let client: Client;
+
+  beforeAll(async () => {
+    const transport = new StdioClientTransport({
+      command: process.execPath,
+      args: [SERVER_ENTRY],
+      env: { AFFITOR_API_KEY: 'test_key', AFFITOR_API_URL: 'http://127.0.0.1:1' },
+    });
+    client = new Client({ name: 'test-client', version: '0.0.0' });
+    await client.connect(transport);
+  }, 20000);
+
+  afterAll(async () => {
+    await client?.close();
+  });
+
+  it('does not offer the money tools', async () => {
+    const { tools } = await client.listTools();
+    expect(tools.map((t) => t.name).sort()).toEqual([...DEFAULT_TOOLS].sort());
+  });
+
+  it('a call to affitor_track_sale is refused, not executed', async () => {
+    const res = await client
+      .callTool({ name: 'affitor_track_sale', arguments: { clickId: 'c', amount: 100, invoiceId: 'i' } })
+      .catch((err: Error) => ({ isError: true, content: [{ type: 'text', text: err.message }] }));
+    expect(res.isError).toBe(true);
   });
 });
 
@@ -88,7 +125,7 @@ describe('@affitor/mcp tools/call → wire contract (mocked fetch)', () => {
 
     // Register tools on an in-memory MCP server, call through a connected client.
     const server = new McpServer({ name: 'affitor', version: '0.1.0' });
-    registerTools(server, affitor);
+    registerTools(server, affitor, undefined, { allowWrites: true });
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
     const client = new Client({ name: 'test', version: '0.0.0' });
     await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
@@ -177,7 +214,7 @@ describe('@affitor/mcp tool handlers (stubbed client)', () => {
     };
 
     const server = new McpServer({ name: 'affitor', version: '0.1.0' });
-    registerTools(server, stub);
+    registerTools(server, stub, undefined, { allowWrites: true });
     const [ct, st] = InMemoryTransport.createLinkedPair();
     const client = new Client({ name: 'test', version: '0.0.0' });
     await Promise.all([server.connect(st), client.connect(ct)]);
@@ -309,5 +346,101 @@ describe('@affitor/mcp tool handlers (stubbed client)', () => {
     expect(res.isError).toBe(true);
 
     await client.close();
+  });
+});
+
+// ── 4. Test mode and dry run ──
+describe('@affitor/mcp test mode', () => {
+  const noCalls: AffitorLike = {
+    readiness: async () => ({}) as never,
+    trackLead: async () => ({ ok: true, status: 200, data: null }),
+    trackSale: async () => {
+      throw new Error('a test sale must not call the real trackSale');
+    },
+    trackRefund: async () => {
+      throw new Error('a dry-run refund must not call the API');
+    },
+    trackClick: async () => ({ ok: true, status: 200, data: null }),
+  };
+
+  async function connect(affitor: AffitorLike, trackTestSale?: (input: unknown) => Promise<unknown>) {
+    const server = new McpServer({ name: 'affitor', version: '0.1.0' });
+    registerTools(server, affitor, undefined, { allowWrites: true, trackTestSale: trackTestSale as never });
+    const [ct, st] = InMemoryTransport.createLinkedPair();
+    const client = new Client({ name: 'test', version: '0.0.0' });
+    await Promise.all([server.connect(st), client.connect(ct)]);
+    return client;
+  }
+
+  it('affitor_track_sale with testMode goes to the test-sale path, never the real one', async () => {
+    const seen: unknown[] = [];
+    const client = await connect(noCalls, async (input) => {
+      seen.push(input);
+      return { ok: true, status: 200, data: { test_mode: true } };
+    });
+    const res = await client.callTool({
+      name: 'affitor_track_sale',
+      arguments: { clickId: 'clk_1', amount: 1000, invoiceId: 'inv_t', testMode: true },
+    });
+    expect(res.isError).toBeFalsy();
+    expect(seen).toEqual([expect.objectContaining({ clickId: 'clk_1', amount: 1000, invoiceId: 'inv_t' })]);
+    await client.close();
+  });
+
+  it('affitor_track_refund with testMode is a dry run', async () => {
+    const client = await connect(noCalls);
+    const res = await client.callTool({
+      name: 'affitor_track_refund',
+      arguments: { invoiceId: 'inv_t', refundAmountCents: 500, testMode: true },
+    });
+    expect(res.isError).toBeFalsy();
+    const text = (res.content as { type: string; text: string }[])[0].text;
+    expect(JSON.parse(text)).toEqual({ dry_run: true, would_send: { invoiceId: 'inv_t', refundAmountCents: 500 } });
+    await client.close();
+  });
+
+  it('affitor_track_lead with testMode sends test_mode', async () => {
+    const seen: unknown[] = [];
+    const client = await connect({
+      ...noCalls,
+      trackLead: async (input) => {
+        seen.push(input);
+        return { ok: true, status: 200, data: null };
+      },
+    });
+    await client.callTool({ name: 'affitor_track_lead', arguments: { clickId: 'clk_1', testMode: true } });
+    expect(seen[0]).toMatchObject({ clickId: 'clk_1', additionalData: { test_mode: true } });
+    await client.close();
+  });
+
+  it('postTestSale posts the snake_case body with additional_data.test_mode and no undefined fields', async () => {
+    const calls: { url: string; init: RequestInit }[] = [];
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = (async (url: string, init: RequestInit) => {
+      calls.push({ url: String(url), init });
+      return new Response(JSON.stringify({ success: true, data: { test_mode: true } }), { status: 200 });
+    }) as unknown as typeof fetch;
+    try {
+      const out = await postTestSale('prog_secret', 'https://api.affitor.com', { clickId: 'clk_1', amount: 1000, invoiceId: 'inv_t' });
+      expect(out).toMatchObject({ ok: true, status: 200 });
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+    expect(calls).toHaveLength(1);
+    expect(calls[0].url).toBe('https://api.affitor.com/api/v1/track/sale');
+    expect((calls[0].init.headers as Record<string, string>).Authorization).toBe('Bearer prog_secret');
+    const body = JSON.parse(String(calls[0].init.body));
+    expect(body).toEqual({ click_id: 'clk_1', amount_cents: 1000, transaction_id: 'inv_t', additional_data: { test_mode: true } });
+  });
+
+  it('postTestSale turns an API error into { ok: false, error }', async () => {
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = (async () => new Response(JSON.stringify({ error: 'Invalid API token' }), { status: 401 })) as unknown as typeof fetch;
+    try {
+      const out = await postTestSale('bad', 'https://api.affitor.com', { clickId: 'c', amount: 1, invoiceId: 'i' });
+      expect(out).toMatchObject({ ok: false, status: 401, error: 'Invalid API token' });
+    } finally {
+      globalThis.fetch = realFetch;
+    }
   });
 });
