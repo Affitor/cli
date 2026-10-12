@@ -447,28 +447,42 @@ describe('@affitor/mcp test mode', () => {
 });
 
 describe('@affitor/mcp idempotency keys', () => {
-  it.each(['affitor_track_sale', 'affitor_track_refund'])('%s refuses an empty invoiceId', async (name) => {
+  it.each([
+    ['affitor_track_sale', { clickId: 'c', amount: 100, invoiceId: '' }],
+    ['affitor_track_sale', { clickId: 'c', amount: 100, invoiceId: '', testMode: true }],
+    ['affitor_track_refund', { invoiceId: '' }],
+    ['affitor_track_refund', { invoiceId: '', testMode: true }],
+  ])('%s refuses an empty invoiceId before any call (%j)', async (name, args) => {
+    const calls = { trackSale: 0, trackRefund: 0, trackTestSale: 0 };
     const stub: AffitorLike = {
       readiness: async () => ({}) as never,
       trackLead: async () => ({ ok: true, status: 200, data: null }),
       trackSale: async () => {
-        throw new Error('must not be called with an empty invoiceId');
+        calls.trackSale++;
+        return { ok: true, status: 200, data: null };
       },
       trackRefund: async () => {
-        throw new Error('must not be called with an empty invoiceId');
+        calls.trackRefund++;
+        return { ok: true, status: 200, data: null };
       },
       trackClick: async () => ({ ok: true, status: 200, data: null }),
     };
     const server = new McpServer({ name: 'affitor', version: '0.1.0' });
-    registerTools(server, stub, undefined, { allowWrites: true });
+    registerTools(server, stub, undefined, {
+      allowWrites: true,
+      trackTestSale: async () => {
+        calls.trackTestSale++;
+        return { ok: true, status: 200, data: null };
+      },
+    });
     const [ct, st] = InMemoryTransport.createLinkedPair();
     const client = new Client({ name: 'test', version: '0.0.0' });
     await Promise.all([server.connect(st), client.connect(ct)]);
-    const args = name === 'affitor_track_sale' ? { clickId: 'c', amount: 100, invoiceId: '' } : { invoiceId: '' };
     const res = await client
       .callTool({ name, arguments: args })
       .catch((err: Error) => ({ isError: true, content: [{ type: 'text', text: err.message }] }));
     expect(res.isError).toBe(true);
+    expect(calls).toEqual({ trackSale: 0, trackRefund: 0, trackTestSale: 0 });
     await client.close();
   });
 });
