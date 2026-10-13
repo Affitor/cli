@@ -1,7 +1,6 @@
 import { DEFAULT_API_URL } from "../types.js";
 import type {
   InitResponse,
-  StripeConnectResponse,
   ProgramStatus,
   ProgramSummary,
   TestEventResult,
@@ -110,18 +109,6 @@ export class AffitorAPI {
     advertiser_id?: number;
   }): Promise<InitResponse> {
     return this.request<InitResponse>("/api/v1/cli/init", {
-      method: "POST",
-      body: data,
-    });
-  }
-
-  async saveStripeConnection(data: {
-    program_id: string;
-    stripe_user_id: string;
-    webhook_endpoint_id: string;
-    webhook_secret: string;
-  }): Promise<StripeConnectResponse> {
-    return this.request<StripeConnectResponse>("/api/v1/cli/stripe-connect", {
       method: "POST",
       body: data,
     });

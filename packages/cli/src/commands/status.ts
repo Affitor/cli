@@ -83,7 +83,7 @@ export async function runStatus(flags: CLIFlags) {
       logger.step(`DNS: Add CNAME  t.${config.domain} → track.affitor.com`);
     }
     if (!status.stripe_connected) {
-      logger.step("Stripe: Run  npx affitor setup stripe");
+      logger.step("Stripe: Connect it in the Affitor dashboard (program Settings, Connect Stripe)");
     }
   } catch (err) {
     if (err instanceof APIError) {

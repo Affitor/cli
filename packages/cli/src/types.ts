@@ -58,14 +58,6 @@ export interface InitResponse {
   domain: string;
 }
 
-export interface StripeConnectResponse {
-  connected: boolean;
-  stripe_account_id: string;
-  webhook_endpoint_id: string;
-  charges_enabled: boolean;
-  payouts_enabled: boolean;
-}
-
 export interface ProgramStatus {
   program_id: string;
   name: string;
@@ -192,15 +184,3 @@ export const CONFIG_FILE = "config.json";
 export const SECRETS_FILE = ".env";
 export const GLOBAL_CONFIG_DIR = ".affitor";
 export const CREDENTIALS_FILE = "credentials.json";
-export const OAUTH_CALLBACK_PORT_START = 3456;
-export const OAUTH_CALLBACK_PORT_END = 3465;
-export const OAUTH_TIMEOUT_MS = 120_000;
-
-export const WEBHOOK_EVENTS = [
-  "customer.created",
-  "checkout.session.completed",
-  "invoice.paid",
-  "invoice.payment_failed",
-  "charge.refunded",
-  "customer.subscription.deleted",
-] as const;
