@@ -1,7 +1,7 @@
 import type { Command } from "commander";
 import * as logger from "../lib/logger.js";
 import { format } from "../lib/logger.js";
-import { readConfig, ConfigNotFoundError } from "../lib/config.js";
+import { readConfigOrKeyOnly, ConfigNotFoundError } from "../lib/config.js";
 import { AffitorAPI, APIError, NetworkError } from "../lib/api-client.js";
 import { getFlags } from "../lib/flags.js";
 import type { CLIFlags } from "../types.js";
@@ -15,10 +15,10 @@ export function registerTestCommand(program: Command) {
     });
 }
 
-async function runTest(eventType: string | undefined, flags: CLIFlags) {
+export async function runTest(eventType: string | undefined, flags: CLIFlags) {
   let config;
   try {
-    config = readConfig();
+    config = readConfigOrKeyOnly(flags);
   } catch (err) {
     if (err instanceof ConfigNotFoundError) {
       logger.error(err.message);
@@ -44,14 +44,14 @@ async function runTest(eventType: string | undefined, flags: CLIFlags) {
   }
 
   const api = AffitorAPI.fromFlags(
-    { apiKey: flags.apiKey, apiUrl: flags.apiUrl ?? config.api_url },
+    { apiKey: flags.apiKey, apiUrl: flags.apiUrl ?? config?.api_url },
   );
 
   logger.newline();
 
   try {
     const result = await api.sendTestEvent({
-      program_id: config.program_id,
+      program_id: config?.program_id,
       event_type: type,
     });
 
