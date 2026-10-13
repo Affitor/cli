@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runStatus } from "../src/commands/status";
@@ -75,6 +75,35 @@ describe("status and test with a key and no project config", () => {
     expect(init.headers.Authorization).toBe("Bearer aff_env_key");
     const printed = out.join("\n");
     expect(printed).toContain("example.com");
+    expect(printed).not.toContain("undefined");
+  });
+
+  it.each([
+    ["with a project config, its domain wins", true],
+    ["key only, the hostname of the website the API returns", false],
+  ])("the DNS hint is a hostname even when the website has a path: %s", async (_label, withConfig) => {
+    if (withConfig) {
+      mkdirSync(join(dir, ".affitor"));
+      writeFileSync(join(dir, ".affitor", "config.json"), JSON.stringify({ version: 2, program_id: "1189", domain: "example.com", api_url: API_URL }));
+    }
+    process.env.AFFITOR_API_KEY = "aff_env_key";
+    respond({ ...STATUS, domain: "example.com/pricing/" });
+
+    await runStatus(flags);
+
+    const printed = out.join("\n");
+    expect(printed).toContain("t.example.com → track.affitor.com");
+    expect(printed).not.toContain("/pricing");
+  });
+
+  it("no DNS hint when the API has no usable website", async () => {
+    process.env.AFFITOR_API_KEY = "aff_env_key";
+    respond({ ...STATUS, domain: "" });
+
+    await runStatus(flags);
+
+    const printed = out.join("\n");
+    expect(printed).not.toContain("CNAME");
     expect(printed).not.toContain("undefined");
   });
 
