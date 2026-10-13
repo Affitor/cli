@@ -8,8 +8,7 @@ CLI-native affiliate tracking. Connect Stripe, track commissions, manage partner
 # Create your affiliate program
 npx affitor init
 
-# Connect Stripe for automatic payment tracking
-npx affitor setup stripe
+# Connect Stripe in the Affitor dashboard: program Settings, Connect Stripe
 
 # Check program health
 npx affitor status
@@ -26,7 +25,7 @@ npx affitor test sale
 |---|---|
 | `affitor init` | Create a new affiliate program. Interactive prompts or `--no-interactive` with flags. |
 | `affitor onboard` | Wire Affitor into an existing app end-to-end: detect → install browser tracking → inject the Stripe sale call → verify. |
-| `affitor setup stripe` | Connect Stripe via OAuth. Auto-configures webhooks for payment tracking. |
+| `affitor setup stripe` | Points you to the dashboard, where Stripe is connected (program Settings, Connect Stripe). Exits 1. |
 | `affitor setup dns` | Set up DNS CNAME tracking (coming soon). |
 | `affitor status` | Show program health: DNS, Stripe connection, recent events. |
 | `affitor test [type]` | Send a test event (`click`, `lead`, or `sale`). |
@@ -92,24 +91,13 @@ Running `npx affitor init` creates:
   skills.md       -- AI agent instructions
 ```
 
-## Stripe Auto-Connect
+## Stripe
 
-`npx affitor setup stripe` automates the entire Stripe integration:
-
-1. Opens Stripe Connect OAuth in your browser
-2. Creates webhook endpoint on your Stripe account
-3. Configures event listeners for:
-   - `customer.created` -- lead tracking
-   - `checkout.session.completed` -- sale tracking
-   - `invoice.paid` -- recurring commissions
-   - `invoice.payment_failed` -- failed payment alerts
-   - `charge.refunded` -- automatic commission clawback
-   - `customer.subscription.deleted` -- churn tracking
+Stripe is connected from the Affitor dashboard (program Settings, Connect Stripe), not from the CLI. Affitor's own webhook then records sales and renewals; add Affitor metadata to your checkout so sales are attributed reliably.
 
 ## Requirements
 
 - Node.js >= 18
-- Stripe account (for `setup stripe`)
 
 ## License
 

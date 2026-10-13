@@ -1,6 +1,6 @@
 {
   "name": "affitor",
-  "version": "0.4.2",
+  "version": "0.4.3",
   "description": "CLI-native affiliate tracking. Connect Stripe, track commissions, manage partners — all from your terminal.",
   "type": "module",
   "bin": {
@@ -44,7 +44,6 @@
     "@inquirer/prompts": "^7.5.0",
     "picocolors": "^1.1.1",
     "open": "^10.1.0",
-    "stripe": "^17.7.0",
     "@affitor/recipes": "^0.1.0"
   },
   "devDependencies": {
