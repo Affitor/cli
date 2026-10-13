@@ -96,6 +96,15 @@ describe("status and test with a key and no project config", () => {
     expect(printed).not.toContain("/pricing");
   });
 
+  it.each(["HTTPS://Example.com/pricing/", "Http://example.com"])("key only, a scheme in any case is dropped: %s", async (site) => {
+    process.env.AFFITOR_API_KEY = "aff_env_key";
+    respond({ ...STATUS, domain: site });
+
+    await runStatus(flags);
+
+    expect(out.join("\n")).toContain("t.example.com → track.affitor.com");
+  });
+
   it("no DNS hint when the API has no usable website", async () => {
     process.env.AFFITOR_API_KEY = "aff_env_key";
     respond({ ...STATUS, domain: "" });
