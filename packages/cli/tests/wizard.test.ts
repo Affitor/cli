@@ -188,13 +188,15 @@ describe("trackerComponentSource", () => {
   it("emits 'use client' for App Router and an unquoted numeric programId", () => {
     const src = trackerComponentSource(123, true);
     expect(src.startsWith("'use client';")).toBe(true);
-    expect(src).toContain("init({ programId: 123 })");
-    expect(src).toContain("from '@affitor/sdk'");
+    expect(src).toContain("loadAffitor(123)");
+    expect(src).toContain("import { loadAffitor } from '@affitor/sdk';");
+    // @affitor/sdk exports loadAffitor only; an `init` import does not compile.
+    expect(src).not.toMatch(/\binit\(|import \{ init \}/);
   });
 
   it("omits 'use client' for Pages Router and quotes string ids", () => {
     const src = trackerComponentSource("prog_abc", false);
     expect(src.startsWith("'use client';")).toBe(false);
-    expect(src).toContain('init({ programId: "prog_abc" })');
+    expect(src).toContain('loadAffitor("prog_abc")');
   });
 });
