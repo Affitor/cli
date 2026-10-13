@@ -56,6 +56,10 @@ export async function runStatus(flags: CLIFlags) {
         : "warn"
       : "error";
 
+    // The config's domain when there is one; otherwise the website the API returns, which keeps
+    // its path ("example.com/pricing/"), reduced to its hostname for the DNS hint.
+    const domain = config?.domain ?? hostnameOf(status.domain);
+
     // Find max for progress bars
     const events = status.recent_events;
     const maxEvent = Math.max(events.clicks_24h, events.leads_24h, events.sales_24h, 1);
@@ -63,7 +67,7 @@ export async function runStatus(flags: CLIFlags) {
     logger.banner();
 
     logger.titledBox(status.name, [
-      `  ${format.dim(status.domain)}`,
+      `  ${format.dim(domain)}`,
       `  ${format.dim("ID:")} ${status.program_id}`,
       "",
       `  ${format.bold("Integrations")}`,
@@ -79,8 +83,8 @@ export async function runStatus(flags: CLIFlags) {
     ]);
 
     // Action hints
-    if (!status.dns_verified) {
-      logger.step(`DNS: Add CNAME  t.${status.domain} → track.affitor.com`);
+    if (!status.dns_verified && domain) {
+      logger.step(`DNS: Add CNAME  t.${domain} → track.affitor.com`);
     }
     if (!status.stripe_connected) {
       logger.step("Stripe: Connect it in the Affitor dashboard (program Settings, Connect Stripe)");
@@ -113,5 +117,14 @@ export async function runStatus(flags: CLIFlags) {
       if (flags.json) logger.json({ error: "unexpected_error" });
     }
     process.exit(1);
+  }
+}
+
+function hostnameOf(site: string | undefined): string {
+  if (!site) return "";
+  try {
+    return new URL(`https://${site.replace(/^https?:\/\//, "")}`).hostname;
+  } catch {
+    return "";
   }
 }
