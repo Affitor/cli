@@ -1,7 +1,7 @@
 import type { Command } from "commander";
 import * as logger from "../lib/logger.js";
 import { format } from "../lib/logger.js";
-import { readConfig, ConfigNotFoundError, apiKeySourceLabel } from "../lib/config.js";
+import { readConfigOrKeyOnly, ConfigNotFoundError, apiKeySourceLabel } from "../lib/config.js";
 import { AffitorAPI, APIError, NetworkError } from "../lib/api-client.js";
 import { getFlags } from "../lib/flags.js";
 import type { CLIFlags } from "../types.js";
@@ -18,7 +18,7 @@ export function registerStatusCommand(program: Command) {
 export async function runStatus(flags: CLIFlags) {
   let config;
   try {
-    config = readConfig();
+    config = readConfigOrKeyOnly(flags);
   } catch (err) {
     if (err instanceof ConfigNotFoundError) {
       logger.error(err.message);
@@ -29,11 +29,11 @@ export async function runStatus(flags: CLIFlags) {
   }
 
   const api = AffitorAPI.fromFlags(
-    { apiKey: flags.apiKey, apiUrl: flags.apiUrl ?? config.api_url },
+    { apiKey: flags.apiKey, apiUrl: flags.apiUrl ?? config?.api_url },
   );
 
   try {
-    const status = await api.getStatus(config.program_id);
+    const status = await api.getStatus(config?.program_id);
 
     if (flags.json) {
       logger.json(status);
@@ -63,7 +63,7 @@ export async function runStatus(flags: CLIFlags) {
     logger.banner();
 
     logger.titledBox(status.name, [
-      `  ${format.dim(config.domain)}`,
+      `  ${format.dim(status.domain)}`,
       `  ${format.dim("ID:")} ${status.program_id}`,
       "",
       `  ${format.bold("Integrations")}`,
@@ -80,7 +80,7 @@ export async function runStatus(flags: CLIFlags) {
 
     // Action hints
     if (!status.dns_verified) {
-      logger.step(`DNS: Add CNAME  t.${config.domain} → track.affitor.com`);
+      logger.step(`DNS: Add CNAME  t.${status.domain} → track.affitor.com`);
     }
     if (!status.stripe_connected) {
       logger.step("Stripe: Connect it in the Affitor dashboard (program Settings, Connect Stripe)");
@@ -98,7 +98,7 @@ export async function runStatus(flags: CLIFlags) {
         // only AFFITOR_API_KEY would leave the refused key on the wire.
         logger.error(
           "API key expired or invalid.\n" +
-            `  Ask a workspace owner of program ${config.program_id} to open Affitor → Settings → API Key and click Regenerate.\n` +
+            `  Ask a workspace owner of ${config ? `program ${config.program_id}` : "the program"} to open Affitor → Settings → API Key and click Regenerate.\n` +
             `  Then replace the key in ${apiKeySourceLabel(flags)} with the new one.`,
         );
       } else {

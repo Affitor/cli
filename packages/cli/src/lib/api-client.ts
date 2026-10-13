@@ -114,9 +114,9 @@ export class AffitorAPI {
     });
   }
 
-  async getStatus(programId: string): Promise<ProgramStatus> {
+  async getStatus(programId?: string): Promise<ProgramStatus> {
     return this.request<ProgramStatus>(
-      `/api/v1/cli/status?program_id=${programId}`,
+      programId ? `/api/v1/cli/status?program_id=${programId}` : "/api/v1/cli/status",
     );
   }
 
@@ -141,7 +141,7 @@ export class AffitorAPI {
   }
 
   async sendTestEvent(data: {
-    program_id: string;
+    program_id?: string;
     event_type: "click" | "lead" | "sale";
   }): Promise<TestEventResult> {
     return this.request<TestEventResult>("/api/v1/cli/test-event", {

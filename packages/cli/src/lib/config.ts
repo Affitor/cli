@@ -47,6 +47,20 @@ export function readConfig(cwd?: string): AffitorConfig {
   return config;
 }
 
+/**
+ * The project config, or null when this directory has none but a key was passed with
+ * `--api-key` or AFFITOR_API_KEY. The API finds the program from the key alone, so `status` and
+ * `test` work for a program created in the dashboard, without `init` (which makes a new one).
+ */
+export function readConfigOrKeyOnly(flags: { apiKey?: string }, cwd?: string): AffitorConfig | null {
+  try {
+    return readConfig(cwd);
+  } catch (err) {
+    if (err instanceof ConfigNotFoundError && (flags.apiKey || process.env.AFFITOR_API_KEY)) return null;
+    throw err;
+  }
+}
+
 export function writeConfig(config: AffitorConfig, cwd?: string): void {
   const dir = getConfigDir(cwd);
   if (!existsSync(dir)) {
@@ -463,7 +477,7 @@ export class ConfigNotFoundError extends Error {
   constructor(dir: string) {
     super(
       `No Affitor config found in ${dir}.\n` +
-        `Run ${"`npx affitor init`"} to set up your program.`,
+        `Run ${"`npx affitor init`"} to set up a new program, or set AFFITOR_API_KEY to use an existing one.`,
     );
     this.name = "ConfigNotFoundError";
   }
