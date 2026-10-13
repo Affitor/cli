@@ -123,7 +123,7 @@ export async function runStatus(flags: CLIFlags) {
 function hostnameOf(site: string | undefined): string {
   if (!site) return "";
   try {
-    return new URL(`https://${site.replace(/^https?:\/\//, "")}`).hostname;
+    return new URL(/^[a-z][a-z0-9+.-]*:\/\//i.test(site) ? site : `https://${site}`).hostname;
   } catch {
     return "";
   }
