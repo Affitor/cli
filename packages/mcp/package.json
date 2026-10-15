@@ -1,7 +1,8 @@
 {
   "name": "@affitor/mcp",
-  "version": "0.2.1",
-  "description": "Model Context Protocol (MCP) stdio server for Affitor — lets AI agents (Claude Desktop, Cursor, …) call Affitor affiliate-tracking capabilities as tools.",
+  "mcpName": "com.affitor/mcp",
+  "version": "0.2.2",
+  "description": "Model Context Protocol (MCP) stdio server for Affitor \u2014 lets AI agents (Claude Desktop, Cursor, \u2026) call Affitor affiliate-tracking capabilities as tools.",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -15,7 +16,8 @@
     "affitor-mcp": "./dist/index.js"
   },
   "files": [
-    "dist"
+    "dist",
+    "server.json"
   ],
   "scripts": {
     "build": "tsc",
