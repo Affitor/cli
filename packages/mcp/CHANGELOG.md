@@ -1,5 +1,8 @@
 # Changelog — @affitor/mcp
 
+## 0.2.2
+- Listed in the Official MCP Registry as `com.affitor/mcp`: `mcpName` in package.json and a `server.json` (npm, stdio, the three environment variables). No change to tools or behaviour.
+
 ## 0.2.1
 - `affitor_track_sale` and `affitor_track_refund` are only registered when `AFFITOR_MCP_WRITE=1`. Without it the server offers 5 tools, none of which can create a sale or reverse a commission. **If you call `affitor_track_sale` from an agent today, add `AFFITOR_MCP_WRITE=1` to the server's `env`.**
 - Every tool carries MCP annotations (`readOnlyHint`, `destructiveHint`, `idempotentHint`, `openWorldHint`); the two money tools are marked destructive.
