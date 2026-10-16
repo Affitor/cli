@@ -56,6 +56,8 @@ export interface InitResponse {
   api_key: string;
   program_slug: string;
   domain: string;
+  /** The partner-code parameter the program prints (via | aff). Older servers omit it. */
+  link_param?: string;
 }
 
 export interface ProgramStatus {

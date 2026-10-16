@@ -326,7 +326,7 @@ This project uses Affitor for affiliate/partner tracking. Affitor tracks clicks,
 
 ### 1. Click Tracking
 
-Add this script tag to every page in \`<head>\`. It auto-detects affiliate visits via \`?aff=\` parameter and stores a first-party cookie.
+Add this script tag to every page in \`<head>\`. It auto-detects affiliate visits via \`?${config.ref_param}=\` (it also reads \`?aff=\` and \`?via=\`) and stores a first-party cookie.
 
 \`\`\`html
 <script src="${config.api_url}/js/affitor-tracker.js"
