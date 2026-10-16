@@ -203,7 +203,7 @@ export async function runInit(
       name: "_aff",
       duration_days: cookieDuration,
     },
-    ref_param: "aff",
+    ref_param: refParamFrom(response),
     api_url: apiUrl,
     created_at: new Date().toISOString(),
   };
@@ -306,4 +306,9 @@ function formatCommission(
     return `${value} recurring (${duration})`;
   }
   return `${value} per sale`;
+}
+
+/** The program's partner-code parameter from the init response; aff when an older server omits it. */
+export function refParamFrom(response: { link_param?: string }): string {
+  return response.link_param === "via" || response.link_param === "aff" ? response.link_param : "aff";
 }

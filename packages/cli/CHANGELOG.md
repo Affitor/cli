@@ -1,5 +1,8 @@
 # Changelog — affitor (CLI)
 
+## 0.4.4
+- `affitor init` writes the program's partner link parameter to `ref_param` (`via` for programs created from now on, `aff` for older ones), from the server's answer. An older server without that field still gives `aff`. The setup notes say which parameter partner links use; the tracker reads both `?aff=` and `?via=`.
+
 ## 0.4.3
 - `affitor setup stripe` now points to the dashboard (program Settings, Connect Stripe) and exits 1 (`{"error": "stripe_setup_moved"}` with `--json`). The old flow could not complete: its token exchange needed Affitor's platform secret, the API that saved the connection is retired (410), and the webhook it created pointed at a URL the API does not serve. It no longer creates anything on your Stripe account. The unused `stripe` dependency is removed.
 
