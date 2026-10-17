@@ -1,5 +1,8 @@
 # Changelog — @affitor/mcp
 
+## Registry 0.2.3 (server.json only; the npm package stays 0.2.2)
+- The registry entry `com.affitor/mcp` adds the hosted server as a remote: `https://mcp.affitor.com/mcp` (streamable HTTP, sign in with your Affitor account, read-only). Description and website point at the MCP docs.
+
 ## 0.2.2
 - Listed in the Official MCP Registry as `com.affitor/mcp`: `mcpName` in package.json and a `server.json` (npm, stdio, the three environment variables). No change to tools or behaviour.
 
