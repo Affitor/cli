@@ -11,7 +11,7 @@ import type { CLIFlags } from "../src/types";
  * Product rule: `init` creates a new program. It does not restore the program this directory
  * already points at, and it does not replace that program's API key. The message has to say
  * both, and name what does produce a new key: a workspace owner of the program regenerating
- * it in Settings → API Key.
+ * it in Program settings → Developers → API keys.
  */
 
 const flags: CLIFlags = {
@@ -75,7 +75,7 @@ describe("affitor init in a directory that is already configured", () => {
     expect(out).toContain("does not restore this one");
     expect(out).toContain("does not replace its API key");
     expect(out).toContain("workspace owner of this program");
-    expect(out).toContain("Affitor → Settings → API Key");
+    expect(out).toContain("Affitor → Program settings → Developers → API keys");
     expect(out).toContain("Regenerate");
     expect(out).not.toContain("to reinitialize");
   });

@@ -18,7 +18,7 @@ const ROTATION_401 = {
   error: {
     code: "api_key_rotation_required",
     message: "This API key was retired on 2026-10-03.",
-    hint: "Create a new key in Affitor → Settings → API Key.",
+    hint: "In Affitor → Program settings → Developers → API keys, click Regenerate to get a new key.",
   },
 };
 

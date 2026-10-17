@@ -37,6 +37,10 @@ describe("affitor setup stripe", () => {
     expect(fetch).not.toHaveBeenCalled();
   });
 
+  it("names the dashboard page as it is today (nav v2)", () => {
+    expect(STRIPE_SETUP_MOVED).toContain("Affitor → Program settings → Payments and click Connect Stripe");
+  });
+
   it("old flags are accepted and still get the directions", async () => {
     await run(["setup", "stripe", "--stripe-secret-key", "sk_test_x", "--stripe-client-id", "ca_x"]);
     expect(process.exitCode).toBe(1);

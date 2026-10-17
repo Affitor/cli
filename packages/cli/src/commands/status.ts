@@ -87,7 +87,7 @@ export async function runStatus(flags: CLIFlags) {
       logger.step(`DNS: Add CNAME  t.${domain} → track.affitor.com`);
     }
     if (!status.stripe_connected) {
-      logger.step("Stripe: Connect it in the Affitor dashboard (program Settings, Connect Stripe)");
+      logger.step("Stripe: Connect it in the Affitor dashboard (Program settings → Payments, Connect Stripe)");
     }
   } catch (err) {
     if (err instanceof APIError) {
@@ -102,7 +102,7 @@ export async function runStatus(flags: CLIFlags) {
         // only AFFITOR_API_KEY would leave the refused key on the wire.
         logger.error(
           "API key expired or invalid.\n" +
-            `  Ask a workspace owner of ${config ? `program ${config.program_id}` : "the program"} to open Affitor → Settings → API Key and click Regenerate.\n` +
+            `  Ask a workspace owner of ${config ? `program ${config.program_id}` : "the program"} to open Affitor → Program settings → Developers → API keys and click Regenerate.\n` +
             `  Then replace the key in ${apiKeySourceLabel(flags)} with the new one.`,
         );
       } else {

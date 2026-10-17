@@ -8,7 +8,7 @@ CLI-native affiliate tracking. Connect Stripe, track commissions, manage partner
 # Create your affiliate program
 npx affitor init
 
-# Connect Stripe in the Affitor dashboard: program Settings, Connect Stripe
+# Connect Stripe in the Affitor dashboard: Program settings → Payments, Connect Stripe
 
 # Check program health
 npx affitor status
@@ -25,7 +25,7 @@ npx affitor test sale
 |---|---|
 | `affitor init` | Create a new affiliate program. Interactive prompts or `--no-interactive` with flags. |
 | `affitor onboard` | Wire Affitor into an existing app end-to-end: detect → install browser tracking → inject the Stripe sale call → verify. |
-| `affitor setup stripe` | Points you to the dashboard, where Stripe is connected (program Settings, Connect Stripe). Exits 1. |
+| `affitor setup stripe` | Points you to the dashboard, where Stripe is connected (Program settings → Payments, Connect Stripe). Exits 1. |
 | `affitor setup dns` | Set up DNS CNAME tracking (coming soon). |
 | `affitor status` | Show program health: DNS, Stripe connection, recent events. |
 | `affitor test [type]` | Send a test event (`click`, `lead`, or `sale`). |
@@ -93,7 +93,7 @@ Running `npx affitor init` creates:
 
 ## Stripe
 
-Stripe is connected from the Affitor dashboard (program Settings, Connect Stripe), not from the CLI. Affitor's own webhook then records sales and renewals; add Affitor metadata to your checkout so sales are attributed reliably.
+Stripe is connected from the Affitor dashboard (Program settings → Payments, Connect Stripe), not from the CLI. Affitor's own webhook then records sales and renewals; add Affitor metadata to your checkout so sales are attributed reliably.
 
 ## Requirements
 

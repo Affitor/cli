@@ -291,7 +291,7 @@ export function writeEnvExample(
 
 AFFITOR_API_KEY=${apiKey}
 AFFITOR_PROGRAM_ID=${config.program_id}
-# STRIPE_CONNECTED_ACCOUNT_ID=  (connect Stripe in the Affitor dashboard: program Settings, Connect Stripe)
+# STRIPE_CONNECTED_ACCOUNT_ID=  (connect Stripe in the Affitor dashboard: Program settings → Payments, Connect Stripe)
 `;
   writeFileSync(join(dir, ".env.example"), content);
 }
@@ -367,7 +367,7 @@ curl -X POST ${config.api_url}/api/v1/track/lead \\
 
 ### 3. Sale/Revenue Tracking
 
-**Option A: Stripe (recommended)**: connect Stripe in the Affitor dashboard (program Settings, Connect Stripe). Affitor's webhook records sales; add Affitor metadata to your checkout so sales are attributed reliably.
+**Option A: Stripe (recommended)**: connect Stripe in the Affitor dashboard (Program settings → Payments, Connect Stripe). Affitor's webhook records sales; add Affitor metadata to your checkout so sales are attributed reliably.
 
 **Option B: Sale API (any payment provider)**
 
