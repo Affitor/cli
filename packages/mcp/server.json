@@ -2,20 +2,22 @@
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "com.affitor/mcp",
   "title": "Affitor",
-  "description": "Track affiliate clicks, leads and sales and check program readiness on Affitor.",
-  "websiteUrl": "https://affitor.com",
+  "description": "Affiliate programs in AI tools: read partners, commissions and payouts; track clicks and sales.",
+  "websiteUrl": "https://affitor.com/docs/api-reference/mcp",
   "repository": {
     "url": "https://github.com/Affitor/cli",
     "source": "github",
     "subfolder": "packages/mcp"
   },
-  "version": "0.2.2",
+  "version": "0.2.3",
   "packages": [
     {
       "registryType": "npm",
       "identifier": "@affitor/mcp",
       "version": "0.2.2",
-      "transport": { "type": "stdio" },
+      "transport": {
+        "type": "stdio"
+      },
       "environmentVariables": [
         {
           "name": "AFFITOR_API_KEY",
@@ -34,6 +36,12 @@
           "isRequired": false
         }
       ]
+    }
+  ],
+  "remotes": [
+    {
+      "type": "streamable-http",
+      "url": "https://mcp.affitor.com/mcp"
     }
   ]
 }
