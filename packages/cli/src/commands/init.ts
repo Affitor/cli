@@ -77,7 +77,7 @@ export async function runInit(
       "Affitor already configured in this directory.\n" +
         "  Use `npx affitor status` to check your program.\n" +
         "  `init` creates a new program: it does not restore this one and does not replace its API key.\n" +
-        "  For a new key, ask a workspace owner of this program to open Affitor → Settings → API Key " +
+        "  For a new key, ask a workspace owner of this program to open Affitor → Program settings → Developers → API keys " +
         "and click Regenerate, then replace the key this project uses.",
     );
     if (flags.json) {

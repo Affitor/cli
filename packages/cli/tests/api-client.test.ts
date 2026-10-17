@@ -66,7 +66,7 @@ describe("AffitorAPI error parsing", () => {
 const ROTATION_WARNING = {
   code: "api_key_rotation_required",
   message: "This API key must be replaced by 2026-10-03.",
-  hint: "Create a new key in Affitor → Settings → API Key, then update AFFITOR_API_KEY on your server.",
+  hint: "In Affitor → Program settings → Developers → API keys, click Regenerate to get a new key, then update AFFITOR_API_KEY on your server.",
   rotate_by: "2026-10-03T00:00:00Z",
   docs_url: "https://affitor.com/docs/api-reference/errors#api_key_rotation_required",
 };
@@ -80,7 +80,7 @@ const ROTATION_ERROR = {
   error: {
     code: "api_key_rotation_required",
     message: "This API key was retired on 2026-10-03.",
-    hint: "Create a new key in Affitor → Settings → API Key.",
+    hint: "In Affitor → Program settings → Developers → API keys, click Regenerate to get a new key.",
     docs_url: "https://affitor.com/docs/api-reference/errors#api_key_rotation_required",
   },
 };
@@ -225,7 +225,7 @@ describe("AffitorAPI key-rotation signal", () => {
     } catch (e) {
       expect(e).toBeInstanceOf(APIError);
       expect((e as APIError).message).toContain(ROTATION_ERROR.error.message);
-      expect((e as APIError).message).toContain("Create a new key in Affitor");
+      expect((e as APIError).message).toContain("click Regenerate to get a new key");
     }
   });
 });

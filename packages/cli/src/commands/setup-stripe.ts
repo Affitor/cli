@@ -11,7 +11,7 @@ import type { CLIFlags } from "../types.js";
  * 410 Gone (W37-1690), and the webhook it created pointed at a URL the CMS does not serve.
  */
 export const STRIPE_SETUP_MOVED =
-  "Stripe is connected from the Affitor dashboard, not the CLI: open the program, go to Settings, and use Connect Stripe.";
+  "Stripe is connected from the Affitor dashboard, not the CLI: open Affitor → Program settings → Payments and click Connect Stripe.";
 
 export function registerSetupCommand(program: Command) {
   const setup = program
@@ -80,6 +80,6 @@ function runSetupDns(flags: CLIFlags) {
     "",
   ]);
 
-  logger.info(`  Get started: connect Stripe from the Affitor dashboard (program Settings, Connect Stripe).`);
+  logger.info(`  Get started: connect Stripe from the Affitor dashboard (Program settings → Payments, Connect Stripe).`);
   logger.newline();
 }

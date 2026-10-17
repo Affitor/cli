@@ -108,7 +108,7 @@ describe("affitor status: what a refused key is told to do", () => {
     const out = await statusStderr({ ...baseFlags, apiKey: "aff_test_key" });
 
     expect(out).toContain(`workspace owner of program ${PROGRAM_ID}`);
-    expect(out).toContain("Affitor → Settings → API Key");
+    expect(out).toContain("Affitor → Program settings → Developers → API keys");
     expect(out).toContain("Regenerate");
     expect(out).not.toContain("affitor init");
   });
@@ -139,7 +139,7 @@ describe("affitor status: what a refused key is told to do", () => {
     // the API said. Written out here rather than imported: this is the CMS 401 text.
     const fromApi =
       "Invalid API key. To get a working key for the program you already have, ask a workspace " +
-      "owner of that program to open Affitor → Settings → API Key and click Regenerate, then " +
+      "owner of that program to open Affitor → Program settings → Developers → API keys and click Regenerate, then " +
       "replace the key you are sending with the new one.";
     respond401({ data: null, error: { status: 401, message: fromApi } });
 
@@ -202,14 +202,14 @@ describe("affitor status: what a refused key is told to do", () => {
       error: {
         code: "api_key_rotation_required",
         message: "This API key was retired on 2026-10-03.",
-        hint: "Create a new key in Affitor → Settings → API Key.",
+        hint: "In Affitor → Program settings → Developers → API keys, click Regenerate to get a new key.",
       },
     });
 
     const out = await statusStderr({ ...baseFlags, apiKey: "aff_test_key" });
 
     expect(out).toContain("This API key was retired on 2026-10-03.");
-    expect(out).toContain("Create a new key in Affitor → Settings → API Key.");
+    expect(out).toContain("In Affitor → Program settings → Developers → API keys, click Regenerate to get a new key.");
     expect(out).not.toContain("affitor init");
   });
 });
