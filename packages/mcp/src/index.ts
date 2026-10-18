@@ -201,12 +201,12 @@ export function registerTools(
     'affitor_readiness',
     {
       description:
-        "Check this program's integration/onboarding readiness — returns a 5-gate verdict + blocker + next_action. Poll until integration_verified is true.",
+        "Check how close this program is to tracking real affiliate sales. Use it first to see what to fix, and after affitor_run_verification, every poll.retry_after_seconds until integration_verified is true. Returns state, integration_verified, blocker (the first failing gate), each gate (profile, economics, payout, tracking, live) with status and next_action, last event times and 24-hour counts.",
       inputSchema: {
         forceRecheck: z
           .boolean()
           .optional()
-          .describe('Force a fresh server-side recheck instead of returning the cached verdict.'),
+          .describe("Run the checks again now, including a fetch of your site to find the tracker. Leave it out to get the last saved result, which is enough while polling."),
       },
       // Reads only, but the server-side check fetches the brand's own site to look for the tracker.
       annotations: { title: 'Check readiness', readOnlyHint: true, idempotentHint: true, openWorldHint: true },
@@ -218,21 +218,21 @@ export function registerTools(
     'affitor_track_lead',
     {
       description:
-        'Report a lead/signup. Binds the customer to the click so later sales attribute by customerExternalId alone.',
+        'Record a signup for this program and bind the customer to the affiliate click that brought them, so their later sales attribute from customerExternalId alone. Use it when a referred visitor creates an account, from your server. Send customerExternalId, clickId, or both. Returns { ok, status, data } from the API, or an error naming what is missing.',
       inputSchema: {
         customerExternalId: z
           .string()
           .optional()
-          .describe("Advertiser's own user id — binds this customer to the click. One of customerExternalId / clickId is required."),
+          .describe("Your app's own id for this customer, such as user_123. It binds the customer to the click, so their later sales need only this id. Send it, clickId, or both."),
         clickId: z
           .string()
           .optional()
-          .describe('Affitor click id (from the `affitor_click_id` cookie). One of clickId / customerExternalId is required.'),
-        email: z.string().optional().describe("The lead's email address."),
+          .describe('The click id the Affitor tracker stored in the visitor\'s affitor_click_id cookie. Send it, customerExternalId, or both; with neither, the lead cannot be attributed.'),
+        email: z.string().optional().describe("The customer's email address, stored with the lead. Leave it out to record the lead without one."),
         testMode: z
           .boolean()
           .optional()
-          .describe('Record a test lead (is_test) instead of a real one.'),
+          .describe('True records a test lead (marked is_test, never counted or paid) while you check an integration. Leave it out to record a real lead.'),
       },
       annotations: { title: 'Report a lead', readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
     },
@@ -256,12 +256,19 @@ export function registerTools(
   server.registerTool(
     'affitor_track_click',
     {
-      description: 'Report a click (usually browser-side; public, no customer needed).',
+      description:
+        'Record a visit that arrived through an affiliate link. Use it only to track clicks from a server; the Affitor browser tracker does this on its own. Returns { ok, status, data }, where data holds click_id (store it in the affitor_click_id cookie), partner_code and cookie_window_days.',
       inputSchema: {
-        affiliateUrl: z.string().optional().describe('The affiliate/referral URL that was clicked.'),
-        pageUrl: z.string().optional().describe('The landing page URL the click arrived on.'),
-        referrerUrl: z.string().optional().describe('The HTTP referrer URL, if any.'),
-        existingClickId: z.string().optional().describe('Reuse an existing Affitor click id instead of minting a new one.'),
+        affiliateUrl: z
+          .string()
+          .optional()
+          .describe("The full link the visitor arrived on, carrying the partner code in ?aff= (or ?via=), such as https://example.com/?aff=maya. The API needs it to find the partner; without it the call fails."),
+        pageUrl: z.string().optional().describe('The page the visitor landed on, if it differs from affiliateUrl. Leave it out to record affiliateUrl as the landing page.'),
+        referrerUrl: z.string().optional().describe('The page that linked to you (the HTTP Referer), stored with the click to show where traffic came from. Leave it out when there is none.'),
+        existingClickId: z
+          .string()
+          .optional()
+          .describe("The visitor's current affitor_click_id, so a repeat visit keeps the same click id. Leave it out to get a new one; an id from another program is never reused."),
       },
       annotations: { title: 'Report a click', readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
     },
@@ -279,21 +286,21 @@ export function registerTools(
     'affitor_get_integration_plan',
     {
       description:
-        'Return the deterministic Affitor payment-tracking integration plan for a given stack — the install, the checkout-metadata snippet, the trackSale snippet + where to inject it, and the self-verify step. The agent follows this instead of guessing a contract.',
+        'Get the exact steps to connect a payment stack to Affitor: the install, the checkout metadata snippet, the trackSale snippet and the file it goes in, and the check that proves it works. Use it before writing integration code, instead of guessing the contract. Works offline: it reads a built-in recipe list and calls no API.',
       inputSchema: {
         framework: z
           .enum(['next-app', 'next-pages', 'fastify', 'express', 'node', 'unknown'])
-          .describe('The detected app framework. Determines where trackSale is injected.'),
+          .describe("The app's framework, read from its package.json and folders: next-app (app/ router), next-pages (pages/ router), fastify, express, node, or unknown. It decides which file the sale snippet goes in."),
         provider: z
           .enum(['stripe', 'polar', 'lemonsqueezy', 'paddle', 'unknown'])
           .default('stripe')
-          .describe('The detected payment provider.'),
+          .describe('The payment provider the app checks out with, read from its dependencies. Leave it out for stripe.'),
         mode: z
           .enum(['stripe_connect', 's2s'])
           .optional()
           .default('stripe_connect')
           .describe(
-            "Payment-tracking mode. 'stripe_connect' (default) = Connect autocaptures the sale (metadata only, no trackSale); 's2s' = inject trackSale in your webhook.",
+            "How sales reach Affitor. stripe_connect: the brand's connected Stripe account reports sales, so the plan only adds checkout metadata. s2s: your payment webhook calls trackSale. Leave it out for stripe_connect.",
           ),
       },
       annotations: { title: 'Get the integration plan', readOnlyHint: true, idempotentHint: true, openWorldHint: false },
@@ -313,7 +320,7 @@ export function registerTools(
     'affitor_run_verification',
     {
       description:
-        "Fire the synthetic click->lead->sale verification chain through Affitor's REAL attribution pipeline (isolated is_test rows). This is the agent's PROOF step: run it, then poll affitor_readiness until integration_verified:true. Rate-limited to 10/program/hour — on a rate_limited result, wait retry_after_seconds, don't hammer.",
+        "Prove the integration works: send a test click, lead and sale through Affitor's real attribution pipeline, recorded as is_test rows that are never paid. Use it after setup, then poll affitor_readiness until integration_verified is true. Limited to 10 runs per program per hour; on rate_limited, wait retry_after_seconds. Returns the API response, with http_status added on an error.",
       inputSchema: {},
       annotations: { title: 'Run the verification chain', readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
     },
@@ -337,27 +344,27 @@ function registerWriteTools(server: McpServer, affitor: AffitorLike, trackTestSa
     'affitor_track_sale',
     {
       description:
-        'Report a sale. Creates a REAL sale and commission unless testMode is true. Resolves attribution by customerExternalId (bound at lead time).',
+        "Record a sale and the affiliate commission it earns. Use it from your payment webhook when a referred customer pays. It creates a real sale and commission unless testMode is true. Attribution comes from customerExternalId (bound by affitor_track_lead) or clickId. Retrying with the same invoiceId never records a second sale. Returns { ok, status, data } from the API.",
       inputSchema: {
         customerExternalId: z
           .string()
           .optional()
-          .describe("Advertiser's own user id — resolves attribution (no clickId needed once bound at lead time). One of customerExternalId / clickId is required."),
-        clickId: z.string().optional().describe('Affitor click id. One of clickId / customerExternalId is required.'),
-        amount: z.number().int().positive().describe('Sale amount in integer cents (e.g. 4999 = $49.99).'),
-        invoiceId: z.string().min(1).describe('Idempotency key — dedups retries (your invoice/transaction id).'),
-        currency: z.string().optional().describe('ISO currency code (default USD).'),
-        saleType: z.enum(['payment', 'subscription']).optional().describe('Whether this is a one-off payment or a subscription.'),
-        isRecurring: z.boolean().optional().describe('Whether this sale recurs (subscription renewal).'),
-        subscriptionId: z.string().optional().describe('Provider subscription id, if applicable.'),
+          .describe("Your app's id for the paying customer, the same one sent to affitor_track_lead. Once bound, it alone attributes the sale. Send it, clickId, or both."),
+        clickId: z.string().optional().describe("The visitor's affitor_click_id, for a sale with no earlier lead. Send it, customerExternalId, or both."),
+        amount: z.number().int().positive().describe('What the customer paid, in the smallest currency unit, such as 4999 for $49.99.'),
+        invoiceId: z.string().min(1).describe("Your payment provider's invoice or charge id, such as in_1Q2w3E. A retry with the same id is recognised and not counted twice; affitor_track_refund uses it too."),
+        currency: z.string().optional().describe('The three-letter currency of amount, such as USD or EUR. Leave it out for USD.'),
+        saleType: z.enum(['payment', 'subscription']).optional().describe('payment for a one-off purchase, subscription for a plan the customer pays for again. Leave it out for payment.'),
+        isRecurring: z.boolean().optional().describe('True when this is a renewal of an earlier subscription sale, not the first payment. Leave it out for a first payment.'),
+        subscriptionId: z.string().optional().describe("The provider's subscription id, such as sub_1Q2w3E, so renewals group under one subscription. Leave it out for a one-off payment."),
         subscriptionInterval: z
           .enum(['monthly', 'quarterly', 'annual'])
           .optional()
-          .describe('Billing interval for a subscription sale.'),
+          .describe('How often the subscription bills. Leave it out for a one-off payment.'),
         testMode: z
           .boolean()
           .optional()
-          .describe('Record a test sale (is_test, no commission) instead of a real one.'),
+          .describe('True records a test sale (marked is_test, no commission) under test_ plus the invoiceId, so the real sale can still be recorded later. Leave it out for a real sale.'),
       },
       annotations: { title: 'Report a sale', readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
     },
@@ -388,20 +395,20 @@ function registerWriteTools(server: McpServer, affitor: AffitorLike, trackTestSa
     'affitor_track_refund',
     {
       description:
-        'Report a refund (omit amount = full → commission reversed; partial → refunded). Idempotent by invoiceId. With testMode, returns what would be sent and calls nothing.',
+        "Record a refund on a sale and adjust its affiliate commission: refunding everything left reverses the commission, a partial refund is recorded against it. Use it from your payment webhook when you refund a customer. A retry with the same invoiceId and amount is ignored. Returns { ok, status, data } from the API; with testMode, the refund it would send, without calling the API.",
       inputSchema: {
-        invoiceId: z.string().min(1).describe('The sale\'s idempotency key (the `invoiceId` you passed to affitor_track_sale).'),
+        invoiceId: z.string().min(1).describe('The invoiceId the sale was recorded with in affitor_track_sale, such as in_1Q2w3E.'),
         refundAmountCents: z
           .number()
           .int()
           .nonnegative()
           .optional()
-          .describe('Refund amount in integer cents. Omit (or 0) = full refund → commission reversed; partial → refunded.'),
-        refundReason: z.string().optional().describe('Optional human-readable refund reason.'),
+          .describe("This refund's amount, in the sale currency's smallest unit, such as 1500 for $15.00; it adds to earlier refunds on the sale, up to the sale amount. Leave it out (or send 0) to refund everything left, which reverses the commission."),
+        refundReason: z.string().optional().describe('Why the customer was refunded, in your words, stored with the refund. Leave it out to record no reason.'),
         testMode: z
           .boolean()
           .optional()
-          .describe('Dry run: return the refund that would be sent, without calling the API.'),
+          .describe('True returns the refund that would be sent and calls nothing. Leave it out to record the refund.'),
       },
       annotations: { title: 'Report a refund', readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
     },
