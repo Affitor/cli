@@ -1,4 +1,6 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import { AgentSetupError, ProgramAgentClient, installProgramAgents } from "../src/lib/program-agent-client.js";
+import { planSetup } from "../src/lib/agent-setup.js";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -6,6 +8,40 @@ import { spawnSync } from "node:child_process";
 
 // Runs on the real Windows CI worker, rather than mocking process.platform.
 describe.skipIf(process.platform !== "win32")("Windows generated launcher smoke", () => {
+  it("restricts user JWT origins and requires explicit local development configuration", () => {
+    try {
+      vi.stubEnv("AFFITOR_AGENT_DEV_API_ORIGIN", "");
+      expect(new ProgramAgentClient("fixture_user_jwt", "https://api.affitor.com").origin).toBe("https://api.affitor.com");
+      expect(() => new ProgramAgentClient("fixture_user_jwt", "https://untrusted.example.test")).toThrow(AgentSetupError);
+      expect(() => new ProgramAgentClient("fixture_user_jwt", "http://127.0.0.1:1337")).toThrow(AgentSetupError);
+      vi.stubEnv("AFFITOR_AGENT_DEV_API_ORIGIN", "http://127.0.0.1:1337");
+      expect(new ProgramAgentClient("fixture_user_jwt", "http://127.0.0.1:1337").origin).toBe("http://127.0.0.1:1337");
+      expect(() => new ProgramAgentClient("fixture_user_jwt", "http://127.0.0.1:1338")).toThrow(AgentSetupError);
+      vi.stubEnv("AFFITOR_AGENT_DEV_API_ORIGIN", "https://untrusted.example.test");
+      expect(() => new ProgramAgentClient("fixture_user_jwt", "https://untrusted.example.test")).toThrow(AgentSetupError);
+    } finally { vi.unstubAllEnvs(); }
+  });
+  it("preserves an installed replacement when old-key revocation fails on the real filesystem", async () => {
+    const project = realpathSync(mkdtempSync(join(tmpdir(), "affitor-windows-replace-")));
+    const api = new ProgramAgentClient("fixture_user_jwt", "https://api.affitor.com");
+    const rows: { id: number; client: string; key_hint: string; status: string }[] = [];
+    let next = 201;
+    vi.spyOn(api, "list").mockResolvedValue(rows);
+    vi.spyOn(api, "mint").mockImplementation(async (program_id, client) => {
+      const id = next++, api_key = "aff_ag_" + String(id).padStart(43, "x");
+      rows.push({ id, client, key_hint: `aff_ag_…${api_key.slice(-4)}`, status: "waiting" });
+      return { version: 1, id, program_id, client, api_url: api.origin, api_key, created_at: "2026-10-18T00:00:00Z", credential_note: "Fake Windows fixture; not verified." };
+    });
+    const revoke = vi.spyOn(api, "revoke").mockRejectedValue(new Error("fixture revoke failure"));
+    try {
+      await installProgramAgents(planSetup(project, ["claude_code"], { agentKeys: true }), 10, api);
+      rows[0].key_hint = "old-hint-format";
+      await expect(installProgramAgents(planSetup(project, ["claude_code"], { agentKeys: true }), 10, api)).rejects.toMatchObject({ cleanupIds: [201], uncertainMint: false, message: expect.stringContaining("installed") });
+      expect(JSON.parse(readFileSync(join(project, ".affitor/agents/claude_code.json"), "utf8")).id).toBe(202);
+      expect(revoke).toHaveBeenCalledExactlyOnceWith(10, 201);
+      expect(rows.map(row => row.status)).toEqual(["waiting", "waiting"]);
+    } finally { vi.restoreAllMocks(); rmSync(project, { recursive: true, force: true }); }
+  });
   it("ignores a cwd npx.cmd decoy and starts the PATH tool with a safe environment", () => {
     const fixture = realpathSync(mkdtempSync(join(tmpdir(), "affitor-windows-")));
     const project = join(fixture, "project & (spaces) %NO_EXPAND%");

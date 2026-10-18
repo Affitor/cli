@@ -49,15 +49,29 @@ path in a worktree or an actual directory outside any repository. A timeout,
 missing executable, unreadable repository or unexpected exit blocks setup before
 any API call or write.
 
+On Windows, POSIX mode0600 does not establish private Windows access-control
+permissions, and the CLI does not configure or audit those permissions. Keep the
+project under your Windows user profile in a folder with restricted access.
+Check inherited permissions before storing credentials or backups in shared
+folders. The owner-only mode checks above apply to macOS and Linux.
+
 Claude Code uses project `.mcp.json`; Cursor uses `.cursor/mcp.json`. Their entries
 contain only `node`, an absolute `.affitor/agent-mcp.cjs` path and a client selector.
 No credential appears in MCP config, the launcher, skill, plan or command output.
 The launcher reads only the selected client's private file, ignoring inherited or
 application keys. A missing/invalid selected key fails closed. Its API origin comes
-from that private record (default production; use an explicit `--api-url` for an
-HTTPS custom origin). It never reads a user login token. Legacy entries with no
+from that private record. It never reads a user login token. Legacy entries with no
 client selector still read inherited `AFFITOR_API_KEY`, then `.affitor/.env`, using
 the same strict env parser as static doctor. Their API origin remains production.
+
+Agent setup sends the signed-in user's JWT only to `https://api.affitor.com`;
+other remote HTTPS origins and other Affitor subdomains are refused before any
+request. For local development, set `AFFITOR_AGENT_DEV_API_ORIGIN` to the exact
+HTTP(S) loopback origin and pass the same value through `--api-url` (for example,
+`http://127.0.0.1:1337`). Only `localhost`, `127.0.0.1` and `[::1]` are supported;
+the port must match. This variable cannot authorize an external host. Use a
+development login for that local server. The launcher still reads only its
+selected program credential, not the login JWT.
 
 Existing unrelated settings are preserved. Changed file bytes are backed up under
 `.affitor/backups/` before replacement, with mode0600. Credential, login-token and
@@ -76,6 +90,23 @@ fails, setup attempts to revoke every newly minted key whose id it received.
 Waiting row. Review unused Waiting credentials in Settings → Agents and revoke them
 before retrying. An unknown mint result is not reported as a successful rollback.
 Reuse does not revoke pre-existing keys when a local update fails.
+
+The preview notes include active-key replacement and revocation before you confirm
+the plan. If a saved id is still active for the selected client but its server hint
+has changed, approved setup saves a replacement first, then revokes that old id.
+Other clients' keys are not revoked. A failed mint or local update leaves the old
+key in place and compensates only newly minted credentials. If old-key revocation
+cannot be confirmed after saving, the new credentials stay installed and the error's
+`revoke_failed_ids` identifies the previous keys that need cleanup. Setup reports
+this partial completion without claiming that the new files were rolled back.
+
+An abrupt interruption, such as closing the terminal after minting, may also leave
+a Waiting credential even when no error JSON was printed and no local credential
+file exists, or leave a previous key unrevoked after its replacement was saved.
+Before retrying, review newly created Waiting rows for the selected
+client in Settings → Agents and revoke unused credentials from that attempt.
+Keep credentials used by other agents. Then run a fresh dry-run and approve setup
+again; a static `doctor` result cannot prove that a server credential was cleaned up.
 
 A recovery skill is installed in `.claude/skills/affitor/` or `.cursor/skills/affitor/`.
 Codex gets `.agents/skills/affitor/` and a printed command; setup does not edit its
