@@ -13,6 +13,7 @@ import { registerSetupCommand } from "./commands/setup-stripe.js";
 import { registerStatusCommand } from "./commands/status.js";
 import { registerTestCommand } from "./commands/test.js";
 import { registerProgramsCommand } from "./commands/programs.js";
+import { registerAgentCommands } from "./commands/agent.js";
 
 // Read the version from package.json at runtime so `affitor --version` never
 // drifts from the published package version (dist/cli.js → ../package.json).
@@ -72,5 +73,6 @@ registerSetupCommand(program);
 registerStatusCommand(program);
 registerTestCommand(program);
 registerProgramsCommand(program);
+registerAgentCommands(program);
 
 program.parse();
