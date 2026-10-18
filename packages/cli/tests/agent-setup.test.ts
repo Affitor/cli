@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { applySetup, doctor, planSetup, selectedClients } from "../src/lib/agent-setup.js";
-import { AGENT_LAUNCHER } from "../src/lib/agent-launcher.js";
+import { AGENT_LAUNCHER, parseProgramCredential } from "../src/lib/agent-launcher.js";
 
 const fixtures: string[] = [];
 function project() {
@@ -57,6 +57,14 @@ describe("selection and preflight", () => {
 });
 
 describe("local transaction", () => {
+  it.each(["*\n!*.bak\n", "*\n!.mcp.json.affitor.bak\n", "*\n!*/\n"])("rejects backup guards that can unignore secrets", guard => {
+    const dir = project();
+    put(dir, ".mcp.json", '{"other":{"token":"fake_private"}}');
+    put(dir, ".affitor/backups/.gitignore", guard);
+    expect(() => planSetup(dir, ["claude_code"])).toThrow("only the '*' rule");
+    expect(existsSync(join(dir, ".affitor/backups/.mcp.json.affitor.bak"))).toBe(false);
+    expect(readFileSync(join(dir, ".mcp.json"), "utf8")).toBe('{"other":{"token":"fake_private"}}');
+  });
   it("preserves unrelated entries, backs up original bytes privately, sets0600 and is idempotent", () => {
     const dir = project(), original = '{ "mcpServers": {"other":{"env":{"TOKEN":"fake-private-value"}}}, "keep":123 }';
     put(dir, ".mcp.json", original);
@@ -113,7 +121,18 @@ describe("local transaction", () => {
 
 describe("built command", () => {
   const bin = resolve("dist/cli.js");
-  const run = (dir: string, args: string[]) => spawnSync(process.execPath, [bin, ...args], { cwd: dir, env: { ...cleanEnv, HOME: dir }, encoding: "utf8" });
+  const run = (dir: string, args: string[], env: NodeJS.ProcessEnv = {}) => spawnSync(process.execPath, [bin, ...args], { cwd: dir, env: { ...cleanEnv, HOME: dir, ...env }, encoding: "utf8" });
+  it.each(['AFFITOR_API_KEY=""', "AFFITOR_API_KEY=one\nAFFITOR_API_KEY=two", "AFFITOR_API_KEY=\nAFFITOR_API_KEY=two", "AFFITOR_API_KEY=", "AFFITOR_API_KEY=''"])("doctor rejects a credential the launcher cannot use: %s", text => {
+    const dir = project();
+    expect(run(dir, ["agent", "setup", "--client", "claude_code", "--yes", "--json"]).status).toBe(0);
+    put(dir, ".affitor/.env", text);
+    const result = run(dir, ["doctor", "--client", "claude_code", "--json"]);
+    expect(result.status).toBe(1);
+    expect(JSON.parse(result.stdout).clients[0]).toMatchObject({ status: "aligned", credential: "missing" });
+    const launcher = spawnSync(process.execPath, [join(dir, ".affitor/agent-mcp.cjs")], { env: cleanEnv, encoding: "utf8" });
+    expect(launcher.status).toBe(1);
+    expect(launcher.stdout).toBe("");
+  });
   it("dry-run and noninteractive no-consent do not write, JSON never contains existing secrets", () => {
     const dir = project();
     put(dir, ".mcp.json", '{"mcpServers":{"other":{"env":{"TOKEN":"fake-private-value"}}}}');
@@ -135,6 +154,15 @@ describe("built command", () => {
     const result = run(dir, ["doctor", "--client", "claude_code", "--json"]);
     expect(result.status).toBe(1);
     expect(JSON.parse(result.stdout)).toMatchObject({ mode: "static", clients: [{ status: "aligned", credential: "missing", liveSession: "not_checked" }] });
+  });
+});
+
+describe("shared credential parser", () => {
+  it("validates inherited credentials and preserves their priority without reading a file", () => {
+    const read = () => { throw new Error("should not read"); };
+    expect(parseProgramCredential("fake_env_key", read)).toBe("fake_env_key");
+    expect(parseProgramCredential(" ", () => "AFFITOR_API_KEY=fake_file_key")).toBe(null);
+    expect(parseProgramCredential("", () => "export AFFITOR_API_KEY='fake_file_key'\n")).toBe("fake_file_key");
   });
 });
 

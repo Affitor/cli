@@ -1,7 +1,7 @@
 import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
-import { AGENT_LAUNCHER, AGENT_SKILL, MCP_VERSION } from "./agent-launcher.js";
+import { AGENT_LAUNCHER, AGENT_SKILL, MCP_VERSION, parseProgramCredential } from "./agent-launcher.js";
 
 export const CLIENTS = ["claude_code", "cursor", "codex"] as const;
 export type AgentClient = typeof CLIENTS[number];
@@ -125,7 +125,7 @@ export function planSetup(cwd: string, clients: AgentClient[]): SetupPlan {
   if (plan.actions.some(action => action.backup)) {
     const guard = join(project, ".affitor/backups/.gitignore");
     const raw = readTarget(project, guard);
-    if (raw !== null && !raw.split(/\r?\n/).includes("*")) throw new Error("Unsafe setup backup directory: its .gitignore must ignore all files.");
+    if (raw !== null && !["*", "*\n", "*\r\n"].includes(raw)) throw new Error("Unsafe setup backup directory: its .gitignore must contain only the '*' rule.");
     add(".affitor/backups/.gitignore", raw ?? "*\n", raw);
     // Protect secret-containing backups before creating the first one. Keep this
     // guard with backups on rollback even if the root .gitignore is restored.
@@ -161,6 +161,8 @@ export function applySetup(plan: SetupPlan, beforeWrite?: (action: FileAction) =
       beforeWrite?.(action);
       if (readTarget(plan.project, action.path) !== before.get(action.path)) throw new Error("A setup file changed after planning. Run setup again.");
       if (action.backup && !existsSync(action.backup)) {
+        const guard = readTarget(plan.project, join(plan.project, ".affitor/backups/.gitignore"));
+        if (guard === null || !["*", "*\n", "*\r\n"].includes(guard)) throw new Error("Unsafe setup backup ignore guard.");
         safePath(plan.project, action.backup);
         mkdirSync(dirname(action.backup), { recursive: true });
         backupCreated = true;
@@ -192,7 +194,10 @@ export function doctor(cwd: string, clients: AgentClient[]) {
     try {
       const plan = planSetup(cwd, [client]);
       const keyPath = join(plan.project, ".affitor/.env");
-      const credential = Boolean(process.env.AFFITOR_API_KEY) || (existsSync(keyPath) && !lstatSync(keyPath).isSymbolicLink() && lstatSync(keyPath).isFile() && /^\s*(?:export\s+)?AFFITOR_API_KEY\s*=\s*\S+/m.test(readFileSync(keyPath, "utf8")));
+      const credential = parseProgramCredential(process.env.AFFITOR_API_KEY, () => {
+        const stat = lstatSync(keyPath);
+        return stat.isFile() && !stat.isSymbolicLink() ? readFileSync(keyPath, "utf8") : null;
+      });
       return { client, status: client === "codex" ? "manual" : plan.actions.some(a => a.operation === "create") ? "missing" : plan.actions.some(a => a.operation === "update") ? "stale" : "aligned", credential: credential ? "present_unverified" : "missing", liveSession: "not_checked", manual: plan.manual };
     } catch { return { client, status: "invalid", credential: "not_checked", liveSession: "not_checked", manual: [] }; }
   });

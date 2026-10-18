@@ -23,6 +23,7 @@ unrelated settings are preserved. Existing file bytes are backed up under
 entries exclude backups and `.affitor/.env`. Updates use atomic replacement and
 read-back, rolling back prior writes on failure. Backups and their local ignore
 guard are kept on failure so a restored root `.gitignore` cannot expose them.
+An existing backup guard must contain only `*`; negation or extra rules are refused.
 A concurrent edit is preserved;
 inspect the files and private backups before retrying. This protects ordinary
 local edits, not a hostile process racing filesystem operations.
@@ -51,6 +52,12 @@ doctor checks existing JSON client configs; an agent caller checks itself.
 Exit0 means all selected static checks align and a credential is present;
 otherwise exit1. Restart the agent and ask it to call `affitor_readiness`, checking
 the program identity before integration. Only report the readiness checks that pass.
+
+Doctor and the launcher use the same credential parser: empty, duplicate and
+interpolated assignments fail closed. An explicit nonempty environment value
+takes precedence and is validated without reading a file. On Windows, the
+launcher runs `npx.cmd` through `cmd.exe` with a constant command; project paths
+and credentials are passed through `cwd`/environment, outside shell text.
 
 This local installer uses an existing program key. Per-agent key issuance,
 pairing, connection telemetry, and the dashboard Agents page are separate work;
