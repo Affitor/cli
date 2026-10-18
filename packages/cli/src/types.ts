@@ -67,6 +67,8 @@ export interface ProgramStatus {
   dns_verified: boolean;
   stripe_connected: boolean;
   stripe_charges_enabled?: boolean;
+  /** Current Stripe binding only. false does not rule out delayed/shared-account Connect events. */
+  stripe_account_bound?: boolean;
   recent_events: {
     clicks_24h: number;
     leads_24h: number;

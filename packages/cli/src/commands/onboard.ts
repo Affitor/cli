@@ -9,9 +9,10 @@ import { AffitorAPI, APIError, NetworkError } from "../lib/api-client.js";
 import { resolveApiKey } from "../lib/config.js";
 import { confirmAction } from "../lib/prompts.js";
 import { detectStack, type Framework } from "../lib/stack-detect.js";
-import { detectPaymentProvider } from "../lib/server-tracking.js";
+import { detectPaymentProvider, serverTrackingSnippets } from "../lib/server-tracking.js";
 import { detectStripeWebhook } from "../lib/webhook-detect.js";
 import { injectStripeTrackSale } from "../lib/inject.js";
+import { inspectProjectEnvironment } from "../lib/project-env.js";
 import { runInstallWizard } from "../lib/wizard.js";
 import { DEFAULT_API_URL, type CLIFlags, type ReadinessResult, type TestChainStatus } from "../types.js";
 
@@ -96,11 +97,20 @@ export async function runOnboard(opts: OnboardOpts, flags: CLIFlags) {
     ]);
   }
 
+  // Does Affitor already record this program's Stripe payments (Connect)? Read once, before the
+  // wizard, so neither the wizard nor the sale step advises a second, double-counting trackSale.
+  const stripeAccountBound = provider === "stripe"
+    ? await stripeBindingFor(api, cwd, apiKey, flags.json)
+    : undefined;
+
   // ── (c) Browser tracking — reuse init's wizard (install @affitor/sdk +
   // inject <AffitorTracker/> via diff-preview+confirm + scaffold lib/affitor.ts).
   // Skipped in --json mode (the wizard is interactive/printed output). ──
   if (!flags.json) {
-    await runInstallWizard({ cwd, programId: "", apiUrl, autoConfirm });
+    await runInstallWizard({
+      cwd, programId: "", apiUrl, autoConfirm,
+      stripeRecordsSales: provider === "stripe" ? (stripeAccountBound === true ? true : "unknown") : undefined,
+    });
     steps.push({ step: "browser_tracking", status: "ok", detail: "via install wizard" });
   } else {
     steps.push({ step: "browser_tracking", status: "skipped", detail: "json mode" });
@@ -114,6 +124,7 @@ export async function runOnboard(opts: OnboardOpts, flags: CLIFlags) {
     interactive,
     autoConfirm,
     json: flags.json,
+    stripeAccountBound,
   });
   steps.push(saleStep);
 
@@ -166,6 +177,48 @@ interface WireSaleArgs {
   interactive: boolean;
   autoConfirm: boolean;
   json: boolean;
+  /** A Stripe account is bound to the program in Affitor; undefined when it could not be read. */
+  stripeAccountBound?: boolean;
+}
+
+/**
+ * Does Affitor record this program's Stripe payments through Connect? Connect credits a sale when
+ * the program is bound to the event's Stripe account, whatever the connection status says
+ * (pending_verification still records), so `GET /v1/cli/status` answers with
+ * `stripe_account_bound`. Not `stripe_connected`: it is false while pending, and before CMS
+ * v3.16.91 it was true for any Server API program. undefined when the call fails or the field
+ * is missing, so the caller asks instead of guessing.
+ */
+export async function readStripeAccountBound(api: Pick<AffitorAPI, "getStatus">): Promise<true | undefined> {
+  try {
+    const status = await api.getStatus();
+    // A disconnected/shared account can still deliver earlier events. Only true is decisive;
+    // false describes the current binding, not the absence of a Connect sale writer.
+    return status?.stripe_account_bound === true ? true : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * The binding for the program whose key the app will run with. The status call answers for the
+ * key passed to onboard; when the env file already holds a different key, the webhook runs as that
+ * other program, so the answer does not apply: unknown.
+ */
+async function stripeBindingFor(
+  api: Pick<AffitorAPI, "getStatus">,
+  cwd: string,
+  apiKey: string,
+  json: boolean,
+): Promise<true | undefined> {
+  const env = inspectProjectEnvironment(cwd, apiKey);
+  if (!env.certain) {
+    if (!json) {
+      logger.warn(`The app runtime key is uncertain (${env.reason}); review all env layers and the program before changing sale tracking.`);
+    }
+    return undefined;
+  }
+  return readStripeAccountBound(api);
 }
 
 /**
@@ -177,7 +230,7 @@ interface WireSaleArgs {
  *   - no webhook      → PRINT the full recipe.
  * NEVER auto-edits when the structure isn't cleanly recognized.
  */
-async function wireServerSale(args: WireSaleArgs): Promise<OnboardStep> {
+export async function wireServerSale(args: WireSaleArgs): Promise<OnboardStep> {
   const { cwd, framework, provider, interactive, autoConfirm, json } = args;
 
   // Only Stripe has the auto-edit path (the recipe's sale snippet is keyed to
@@ -195,6 +248,29 @@ async function wireServerSale(args: WireSaleArgs): Promise<OnboardStep> {
   }
 
   const hook = detectStripeWebhook(cwd, framework);
+
+  // A connected Stripe already reports every payment to Affitor, so a trackSale call in the
+  // webhook would record the same payment a second time (a subscription's first payment as two
+  // sales). Never add one then; when the connection is unknown, ask, and without a person to
+  // ask, change nothing.
+  let connected: boolean | undefined = args.stripeAccountBound === true ? true : undefined;
+  if (connected === undefined && interactive && !autoConfirm && !json) {
+    const keep = await confirmAction(
+      "Keep the existing webhook unchanged? Choose No only after confirming this app's runtime program key and ruling out current Stripe Connect sales, shared accounts and delayed events after disconnect.",
+    );
+    if (keep) return skipSaleForConnect({ cwd, framework, recipe, hook, json, unknown: true });
+    connected = false;
+  }
+  if (connected !== false) {
+    return skipSaleForConnect({ cwd, framework, recipe, hook, json, unknown: connected === undefined });
+  }
+
+  if (!json) {
+    logger.titledBox("Manual tracking: handle refunds too", [
+      "", "  On refund, reverse the commission using the same id you passed to trackSale:",
+      ...serverTrackingSnippets("stripe").refund.split("\n").map(line => `  ${line}`), "",
+    ]);
+  }
 
   if (!hook) {
     if (!json) {
@@ -271,6 +347,122 @@ async function wireServerSale(args: WireSaleArgs): Promise<OnboardStep> {
   return { step: "server_sale", status: "ok", detail: hook.file };
 }
 
+/** Find call tokens outside comments/literals; template interpolation is executable code. */
+export function callsTrackSale(source: string): boolean {
+  let i = 0;
+  let found = false;
+  function quoted(quote: string) {
+    i++;
+    while (i < source.length) {
+      if (source[i] === "\\") { i += 2; continue; }
+      if (source[i++] === quote) break;
+    }
+  }
+  function template() {
+    i++;
+    while (i < source.length) {
+      if (source[i] === "\\") { i += 2; continue; }
+      if (source[i] === "`") { i++; return; }
+      if (source[i] === "$" && source[i + 1] === "{") { i += 2; code(true); }
+      else i++;
+    }
+  }
+  function code(interpolation = false) {
+    let previous = "";
+    let depth = 0;
+    while (i < source.length) {
+      const c = source[i];
+      if (/\s/.test(c)) { i++; continue; }
+      if (source.startsWith("//", i)) {
+        const end = source.indexOf("\n", i + 2); i = end < 0 ? source.length : end; continue;
+      }
+      if (source.startsWith("/*", i)) {
+        const end = source.indexOf("*/", i + 2); i = end < 0 ? source.length : end + 2; continue;
+      }
+      if (c === "'" || c === '"') { quoted(c); previous = "literal"; continue; }
+      if (c === "`") { template(); previous = "literal"; continue; }
+      // A regex literal can contain call-like text too. Distinguish it from division
+      // at expression starts; slash escapes and character classes belong to the literal.
+      if (c === "/" && (!previous || ["=", "(", ":", ",", "[", "!", "return", "=>"].includes(previous))) {
+        i++; let inClass = false;
+        while (i < source.length) {
+          if (source[i] === "\\") { i += 2; continue; }
+          if (source[i] === "[") inClass = true;
+          if (source[i] === "]") inClass = false;
+          if (source[i++] === "/" && !inClass) break;
+        }
+        previous = "literal"; continue;
+      }
+      if (/[A-Za-z_$]/.test(c)) {
+        const start = i++;
+        while (i < source.length && /[\w$]/.test(source[i])) i++;
+        previous = source.slice(start, i); continue;
+      }
+      if (source.startsWith("=>", i)) { previous = "=>"; i += 2; continue; }
+      if (c === "(" && previous === "trackSale") found = true;
+      if (c === "{") depth++;
+      if (c === "}") { if (interpolation && depth === 0) { i++; return; } depth--; }
+      previous = c; i++;
+    }
+  }
+  code();
+  return found;
+}
+
+/**
+ * Stripe connected (or unknown with no one to ask): print the Connect recipe (checkout metadata
+ * only) and leave the webhook alone. A webhook that already calls trackSale is pointed out,
+ * since with Stripe connected it counts each payment twice.
+ */
+function skipSaleForConnect(args: {
+  cwd: string;
+  framework: Framework;
+  /** The s2s recipe, printed when the connection is unknown. */
+  recipe: ReturnType<typeof getRecipe>;
+  hook: { file: string; line: number; handlerHint: string } | null;
+  json: boolean;
+  unknown: boolean;
+}): OnboardStep {
+  const { cwd, framework, recipe, hook, json, unknown } = args;
+  let tracksSale = false;
+  if (hook) {
+    try {
+      tracksSale = callsTrackSale(readFileSync(join(cwd, hook.file), "utf8"));
+    } catch {
+      /* unreadable: nothing to point out */
+    }
+  }
+
+  if (!json) {
+    if (unknown) {
+      logger.warn("Couldn't tell whether Stripe is connected, so your webhook was left unchanged.");
+    }
+    if (tracksSale) {
+      logger.warn(
+        unknown
+          ? `${hook!.file} calls trackSale. It was left unchanged; confirm the runtime program and its Connect sale paths before changing this call.`
+          : `${hook!.file} calls trackSale. With Stripe connected, Affitor already records each payment, so remove that call or every sale counts twice.`,
+      );
+    }
+    if (unknown) {
+      printRecipe(recipe, hook, "Keep existing sale tracking; add a call only after confirming the runtime program and ruling out current, shared-account and delayed Connect events");
+    } else {
+      printRecipe(
+        getRecipe(toRecipeFramework(framework), "stripe", "stripe_connect"),
+        null,
+        "Stripe connected: Affitor records the sale",
+      );
+    }
+  }
+
+  const detail = unknown
+    ? "stripe connection unknown: webhook unchanged, printed recipe"
+    : tracksSale
+      ? `stripe connected: no trackSale added; ${hook!.file} already calls trackSale (double count)`
+      : "stripe connected: Affitor records the sale, no trackSale added";
+  return { step: "server_sale", status: unknown ? "manual" : "skipped", detail };
+}
+
 /**
  * (e) Always PRINT the metadata-propagation snippet — we never auto-edit the
  * checkout-session-create call (it can't be located reliably). Plus the sale
@@ -327,27 +519,19 @@ function writeApiKeyToEnv(
   apiKey: string,
   opts: { autoConfirm: boolean; json: boolean },
 ): OnboardStep {
-  const envName = existsSync(join(cwd, ".env.local")) ? ".env.local" : ".env";
+  const env = inspectProjectEnvironment(cwd, apiKey);
+  const { envName } = env;
   const envPath = join(cwd, envName);
   const line = `AFFITOR_API_KEY=${apiKey}`;
-
-  let content = "";
-  if (existsSync(envPath)) {
-    content = readFileSync(envPath, "utf8");
-    const existing = content.match(/^AFFITOR_API_KEY=(.*)$/m);
-    if (existing) {
-      if (existing[1].trim() === apiKey) {
-        if (!opts.json) logger.step(`${envName} already has AFFITOR_API_KEY — skipped`);
-        return { step: "env_key", status: "already", detail: envName };
-      }
-      // Different value present — NEVER overwrite a secret. Print a notice.
-      if (!opts.json) {
-        logger.warn(`${envName} already has a different AFFITOR_API_KEY — left unchanged.`);
-        logger.step(`To use this key instead, set: ${line}`);
-      }
-      return { step: "env_key", status: "manual", detail: `${envName}: existing value kept` };
-    }
+  if (!env.certain && env.reason !== "no_runtime_key") {
+    if (!opts.json) logger.warn("Project env layers are uncertain — resolve them manually. Nothing was changed.");
+    return { step: "env_key", status: "manual", detail: `env review required: ${env.reason}` };
   }
+  if (env.hasTargetKey) {
+    if (!opts.json) logger.step(`${envName} already has AFFITOR_API_KEY — skipped`);
+    return { step: "env_key", status: "already", detail: envName };
+  }
+  const content = existsSync(envPath) ? readFileSync(envPath, "utf8") : "";
 
   // --json (non-interactive auto) mode never edits files — the no-auto-edit
   // contract. Report it as a manual step (mirrors wireServerSale's json branch)
@@ -358,7 +542,7 @@ function writeApiKeyToEnv(
 
   logger.newline();
   logger.info(`  ${format.dim(`Add to ${envName}:`)}`);
-  logger.info(`    ${format.green("+ " + line)}`);
+  logger.info(`    ${format.green("+ AFFITOR_API_KEY=<program key>")}`);
   logger.newline();
 
   const needsNewline = content.length > 0 && !content.endsWith("\n");
