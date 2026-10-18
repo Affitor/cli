@@ -91,9 +91,19 @@ Waiting row. Review unused Waiting credentials in Settings → Agents and revoke
 before retrying. An unknown mint result is not reported as a successful rollback.
 Reuse does not revoke pre-existing keys when a local update fails.
 
+The preview notes include active-key replacement and revocation before you confirm
+the plan. If a saved id is still active for the selected client but its server hint
+has changed, approved setup saves a replacement first, then revokes that old id.
+Other clients' keys are not revoked. A failed mint or local update leaves the old
+key in place and compensates only newly minted credentials. If old-key revocation
+cannot be confirmed after saving, the new credentials stay installed and the error's
+`revoke_failed_ids` identifies the previous keys that need cleanup. Setup reports
+this partial completion without claiming that the new files were rolled back.
+
 An abrupt interruption, such as closing the terminal after minting, may also leave
 a Waiting credential even when no error JSON was printed and no local credential
-file exists. Before retrying, review newly created Waiting rows for the selected
+file exists, or leave a previous key unrevoked after its replacement was saved.
+Before retrying, review newly created Waiting rows for the selected
 client in Settings → Agents and revoke unused credentials from that attempt.
 Keep credentials used by other agents. Then run a fresh dry-run and approve setup
 again; a static `doctor` result cannot prove that a server credential was cleaned up.

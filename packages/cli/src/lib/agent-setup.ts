@@ -115,7 +115,7 @@ export function planSetup(cwd: string, clients: AgentClient[], options: { agentK
     throw new Error("Setup target already has per-client credentials. Pass --program-id before updating.");
   }
   if (options.agentKeys) {
-    plan.notes.push("Private credential actions may replace revoked/missing keys after sign-in; matching active keys are reused without changing their file.");
+    plan.notes.push("Matching active keys are reused. Replacing an active selected key revokes its previous key after the new files are saved; failed revocations require dashboard cleanup.");
     plan.agentKeys = clients.map(client => {
       const rel = `.affitor/agents/${client}.json`;
       const path = join(project, rel), raw = readTarget(project, path);

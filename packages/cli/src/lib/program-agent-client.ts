@@ -95,16 +95,18 @@ export async function installProgramAgents(plan: SetupPlan, programId: number, a
     return { client, record };
   });
   // Only owner list reads: never call readiness/status to pretend a client connected.
-  const rows = await api.list(programId), minted: number[] = [];
+  const rows = await api.list(programId), minted: number[] = [], replaced: number[] = [];
   try {
     for (const { client, record } of existing) {
-      const active = record && rows.some(row => row.id === record.id && row.client === client && row.status !== "revoked" && !row.revoked_at && row.key_hint === `aff_ag_…${record.api_key.slice(-4)}`);
-      const credential = active ? record : await api.mint(programId, client);
-      if (!active) minted.push(credential.id);
-      stageAgentCredential(plan, client, credential, !active);
+      const row = record && rows.find(row => row.id === record.id && row.client === client);
+      const active = row && row.status !== "revoked" && !row.revoked_at;
+      const reusable = record && active && row.key_hint === `aff_ag_…${record.api_key.slice(-4)}`;
+      const credential = reusable ? record : await api.mint(programId, client);
+      if (!reusable) minted.push(credential.id);
+      if (record && active && !reusable) replaced.push(record.id);
+      stageAgentCredential(plan, client, credential, !reusable);
     }
     apply(plan);
-    return plan.agentKeys.map(({ client, path, id, state }) => ({ client, path, id, state }));
   } catch (error) {
     const known = [...new Set([...minted, ...(error instanceof AgentSetupError ? error.cleanupIds : [])])];
     const failed: number[] = [];
@@ -114,4 +116,10 @@ export async function installProgramAgents(plan: SetupPlan, programId: number, a
       ? "Setup did not finish. Review Waiting agents in the dashboard and revoke unused credentials before retrying. Local files/private backups may need recovery."
       : "Setup did not finish; newly minted credentials were revoked. Check local files/private backups before retrying.", failed, uncertain);
   }
+  // Local installation has committed. Failure to retire an old key must not
+  // compensate the new credentials that the client now uses.
+  const failed: number[] = [];
+  for (const id of new Set(replaced)) { try { await api.revoke(programId, id); } catch { failed.push(id); } }
+  if (failed.length) throw new AgentSetupError("New agent credentials were installed, but previous keys could not be confirmed revoked. Review the reported old key ids in Settings → Agents before retrying.", failed);
+  return plan.agentKeys.map(({ client, path, id, state }) => ({ client, path, id, state }));
 }

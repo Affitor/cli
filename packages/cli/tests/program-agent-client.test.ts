@@ -133,6 +133,75 @@ describe("authenticated per-client setup against local HTTP CMS", () => {
     expect(cms.rows).toHaveLength(3); expect(cms.rows[1].status).toBe("waiting");
     expect(readFileSync(join(root, ".affitor/agents/cursor.json"))).toEqual(cursor);
   });
+  it("shows active-key replacement and revocation in the plan before consent", () => {
+    const root = project();
+    const plan = planSetup(root, ["claude_code"], { agentKeys: true });
+    expect(plan.notes.join(" ")).toMatch(/replac.*active.*revok/i);
+    expect(existsSync(join(root, ".affitor"))).toBe(false);
+  });
+  it("replaces a changed hint then revokes only the old selected key after saving", async () => {
+    const root = project(), cms = await fixture();
+    put(root, ".affitor/.env", "AFFITOR_API_KEY=fake_application_key\n");
+    await installProgramAgents(planSetup(root, ["claude_code", "cursor"], { agentKeys: true }), 10, cms.api);
+    const cursor = readFileSync(join(root, ".affitor/agents/cursor.json"));
+    cms.rows[0].key_hint = key(201).slice(-4);
+    const boundary = cms.requests.length;
+    const apply = vi.fn((plan: Parameters<typeof applySetup>[0]) => {
+      expect(cms.rows[0].status).toBe("waiting");
+      applySetup(plan);
+    });
+    const result = await installProgramAgents(planSetup(root, ["claude_code"], { agentKeys: true }), 10, cms.api, apply);
+    expect(result[0].state).toBe("minted");
+    expect(apply).toHaveBeenCalledOnce();
+    expect(cms.requests.slice(boundary).map(row => [row.method, row.path])).toEqual([
+      ["GET", "/api/v1/programs/10/agents"], ["POST", "/api/v1/programs/10/agents"], ["DELETE", "/api/v1/programs/10/agents/201"],
+    ]);
+    expect(cms.rows.map(row => row.status)).toEqual(["revoked", "waiting", "waiting"]);
+    expect(JSON.parse(readFileSync(join(root, ".affitor/agents/claude_code.json"), "utf8")).id).toBe(203);
+    expect(readFileSync(join(root, ".affitor/agents/cursor.json"))).toEqual(cursor);
+    expect(readFileSync(join(root, ".affitor/.env"), "utf8")).toBe("AFFITOR_API_KEY=fake_application_key\n");
+  });
+  it("keeps installed replacement keys and reports the old id when revocation fails", async () => {
+    const root = project(), cms = await fixture();
+    await installProgramAgents(planSetup(root, ["claude_code"], { agentKeys: true }), 10, cms.api);
+    cms.rows[0].key_hint = key(201).slice(-4); cms.behavior.failRevoke = true;
+    const error = await installProgramAgents(planSetup(root, ["claude_code"], { agentKeys: true }), 10, cms.api).catch(error => error);
+    expect(error).toBeInstanceOf(AgentSetupError);
+    expect(error.cleanupIds).toEqual([201]); expect(error.uncertainMint).toBe(false);
+    expect(error.message).toMatch(/installed/i); expect(error.message).not.toMatch(/rolled back|newly minted credentials were revoked/i);
+    expect(JSON.parse(readFileSync(join(root, ".affitor/agents/claude_code.json"), "utf8")).id).toBe(202);
+    expect(cms.rows.map(row => row.status)).toEqual(["waiting", "waiting"]);
+    expect(cms.requests.filter(row => row.method === "DELETE").map(row => row.path)).toEqual(["/api/v1/programs/10/agents/201"]);
+  });
+  it("keeps the old credential if replacement minting fails", async () => {
+    const root = project(), cms = await fixture();
+    await installProgramAgents(planSetup(root, ["claude_code"], { agentKeys: true }), 10, cms.api);
+    const old = readFileSync(join(root, ".affitor/agents/claude_code.json"));
+    cms.rows[0].key_hint = key(201).slice(-4); cms.behavior.failMintAt = 2;
+    await expect(installProgramAgents(planSetup(root, ["claude_code"], { agentKeys: true }), 10, cms.api)).rejects.toBeInstanceOf(AgentSetupError);
+    expect(cms.rows[0].status).toBe("waiting");
+    expect(readFileSync(join(root, ".affitor/agents/claude_code.json"))).toEqual(old);
+    expect(cms.requests.filter(row => row.method === "DELETE")).toHaveLength(0);
+  });
+  it("compensates only the new key when local replacement fails", async () => {
+    const root = project(), cms = await fixture();
+    await installProgramAgents(planSetup(root, ["claude_code"], { agentKeys: true }), 10, cms.api);
+    const old = readFileSync(join(root, ".affitor/agents/claude_code.json"));
+    cms.rows[0].key_hint = key(201).slice(-4);
+    const apply = vi.fn(() => { throw new Error("fixture local apply failure"); });
+    await expect(installProgramAgents(planSetup(root, ["claude_code"], { agentKeys: true }), 10, cms.api, apply)).rejects.toBeInstanceOf(AgentSetupError);
+    expect(cms.rows.map(row => row.status)).toEqual(["waiting", "revoked"]);
+    expect(cms.requests.filter(row => row.method === "DELETE").map(row => row.path)).toEqual(["/api/v1/programs/10/agents/202"]);
+    expect(readFileSync(join(root, ".affitor/agents/claude_code.json"))).toEqual(old);
+  });
+  it("does not revoke a listed row belonging to a different client", async () => {
+    const root = project(), cms = await fixture();
+    await installProgramAgents(planSetup(root, ["claude_code"], { agentKeys: true }), 10, cms.api);
+    cms.rows[0].client = "cursor";
+    await installProgramAgents(planSetup(root, ["claude_code"], { agentKeys: true }), 10, cms.api);
+    expect(cms.rows[0].status).toBe("waiting");
+    expect(cms.requests.filter(row => row.method === "DELETE")).toHaveLength(0);
+  });
   it("finds reusable old credentials across pagination", async () => {
     const root = project(), cms = await fixture(); cms.behavior.paginate = true;
     for (let id = 1; id <= 103; id++) cms.rows.push({ id, client: "claude_code", key_hint: `aff_ag_…${key(id).slice(-4)}`, status: "waiting" });
@@ -256,6 +325,31 @@ describe("built command and generated launcher", () => {
       expect(result.stdout).not.toContain("fake_legacy_key"); expect(result.stdout).not.toContain("fake_inherited_live_key");
     }
     expect(cms.requests).toHaveLength(0); expect(existsSync(join(root, ".mcp.json"))).toBe(false);
+  });
+  it.each([false, true])("requires consent for replacement and reports old-key cleanup truthfully (%s)", async failRevoke => {
+    const root = project(), cms = await fixture();
+    await installProgramAgents(planSetup(root, ["claude_code"], { agentKeys: true }), 10, cms.api);
+    cms.rows[0].key_hint = key(201).slice(-4); cms.behavior.failRevoke = failRevoke;
+    put(root, ".affitor/credentials.json", JSON.stringify({ token: "fixture_user_jwt", expires_at: "2099-01-01T00:00:00Z" }));
+    const args = ["agent", "setup", "--client", "claude_code", "--program-id", "10", "--json", "--api-url", cms.origin];
+    const boundary = cms.requests.length, old = readFileSync(join(root, ".affitor/agents/claude_code.json"));
+    for (const flags of [["--dry-run"], []]) {
+      const preview = await run(root, [...args, ...flags]);
+      expect(JSON.parse(preview.stdout).notes.join(" ")).toMatch(/replac.*active.*revok/i);
+      expect(cms.requests).toHaveLength(boundary);
+      expect(readFileSync(join(root, ".affitor/agents/claude_code.json"))).toEqual(old);
+    }
+    const result = await run(root, [...args, "--yes"]), output = JSON.parse(result.stdout);
+    expect(result.status, result.stderr).toBe(failRevoke ? 1 : 0);
+    if (failRevoke) {
+      expect(output).toMatchObject({ status: "error", revoke_failed_ids: [201] });
+      expect(output.message).toMatch(/installed/);
+      expect(output.message).not.toMatch(/rolled back|newly minted credentials were revoked/);
+    } else expect(output.status).toBe("needs_next_step");
+    expect(JSON.parse(readFileSync(join(root, ".affitor/agents/claude_code.json"), "utf8")).id).toBe(202);
+    expect(cms.rows[0].status).toBe(failRevoke ? "waiting" : "revoked");
+    expect(cms.requests.slice(boundary).filter(row => row.method === "DELETE").map(row => row.path)).toEqual(["/api/v1/programs/10/agents/201"]);
+    for (const secret of ["fixture_user_jwt", key(201), key(202)]) expect(result.stdout + result.stderr).not.toContain(secret);
   });
   it("uses saved login, reports only installed, and keeps secrets out of verbose JSON", async () => {
     const root = project(), cms = await fixture();
