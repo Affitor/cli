@@ -6,13 +6,19 @@ export class AgentSetupError extends Error {
 }
 const positive = (value: unknown): value is number => typeof value === "number" && Number.isSafeInteger(value) && value > 0;
 function object(value: unknown): value is Record<string, unknown> { return !!value && typeof value === "object" && !Array.isArray(value); }
+function rootOrigin(value: string): URL {
+  const url = new URL(value);
+  if (url.username || url.password || url.search || url.hash || url.pathname !== "/" || !["https:", "http:"].includes(url.protocol)) throw new Error();
+  return url;
+}
 export function agentApiOrigin(value: string): string {
   try {
-    const url = new URL(value);
-    if (url.username || url.password || url.search || url.hash || url.pathname !== "/" ||
-      (url.protocol !== "https:" && !(url.protocol === "http:" && ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname)))) throw new Error();
-    return url.origin;
-  } catch { throw new AgentSetupError("Agent setup requires an HTTPS API origin (loopback HTTP is supported for local testing)."); }
+    const url = rootOrigin(value);
+    if (url.origin === "https://api.affitor.com") return url.origin;
+    const development = process.env.AFFITOR_AGENT_DEV_API_ORIGIN;
+    if (development && ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname) && rootOrigin(development).origin === url.origin) return url.origin;
+    throw new Error();
+  } catch { throw new AgentSetupError("Agent setup sends login credentials only to https://api.affitor.com. Local development requires AFFITOR_AGENT_DEV_API_ORIGIN to match the exact loopback API origin."); }
 }
 interface AgentRow { id: number; client: string; key_hint: string; status: string; revoked_at?: string | null }
 

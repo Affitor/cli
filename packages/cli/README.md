@@ -60,10 +60,18 @@ contain only `node`, an absolute `.affitor/agent-mcp.cjs` path and a client sele
 No credential appears in MCP config, the launcher, skill, plan or command output.
 The launcher reads only the selected client's private file, ignoring inherited or
 application keys. A missing/invalid selected key fails closed. Its API origin comes
-from that private record (default production; use an explicit `--api-url` for an
-HTTPS custom origin). It never reads a user login token. Legacy entries with no
+from that private record. It never reads a user login token. Legacy entries with no
 client selector still read inherited `AFFITOR_API_KEY`, then `.affitor/.env`, using
 the same strict env parser as static doctor. Their API origin remains production.
+
+Agent setup sends the signed-in user's JWT only to `https://api.affitor.com`;
+other remote HTTPS origins and other Affitor subdomains are refused before any
+request. For local development, set `AFFITOR_AGENT_DEV_API_ORIGIN` to the exact
+HTTP(S) loopback origin and pass the same value through `--api-url` (for example,
+`http://127.0.0.1:1337`). Only `localhost`, `127.0.0.1` and `[::1]` are supported;
+the port must match. This variable cannot authorize an external host. Use a
+development login for that local server. The launcher still reads only its
+selected program credential, not the login JWT.
 
 Existing unrelated settings are preserved. Changed file bytes are backed up under
 `.affitor/backups/` before replacement, with mode0600. Credential, login-token and

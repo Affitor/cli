@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createServer, type Server } from "node:http";
 import { spawn, spawnSync } from "node:child_process";
 import { chmodSync, existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
@@ -46,6 +46,7 @@ async function fixture() {
   });
   servers.push(server); await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
   const origin = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
+  vi.stubEnv("AFFITOR_AGENT_DEV_API_ORIGIN", origin);
   return { origin, api: new ProgramAgentClient("fixture_user_jwt", origin), requests, rows, behavior };
 }
 function stored(origin: string, client = "claude_code", id = 1): StoredAgentCredential {
@@ -53,7 +54,7 @@ function stored(origin: string, client = "claude_code", id = 1): StoredAgentCred
 }
 function run(root: string, args: string[]) {
   return new Promise<{ status: number | null; stdout: string; stderr: string }>((resolveRun, reject) => {
-    const child = spawn(process.execPath, [resolve("dist/cli.js"), ...args], { cwd: root, env: { ...cleanEnv, HOME: root, USERPROFILE: root }, windowsHide: true });
+    const child = spawn(process.execPath, [resolve("dist/cli.js"), ...args], { cwd: root, env: { ...cleanEnv, AFFITOR_AGENT_DEV_API_ORIGIN: process.env.AFFITOR_AGENT_DEV_API_ORIGIN ?? "", HOME: root, USERPROFILE: root }, windowsHide: true });
     let stdout = "", stderr = "";
     child.stdout.on("data", chunk => stdout += chunk); child.stderr.on("data", chunk => stderr += chunk);
     const timer = setTimeout(() => { child.kill(); reject(new Error("Fixture CLI timed out")); }, 10_000);
@@ -62,8 +63,41 @@ function run(root: string, args: string[]) {
 }
 afterEach(async () => {
   vi.unstubAllEnvs();
+  vi.unstubAllGlobals();
   for (const server of servers.splice(0)) { server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); }
   for (const root of directories.splice(0)) rmSync(root, { recursive: true, force: true });
+});
+
+describe("user JWT origin boundary", () => {
+  beforeEach(() => { vi.stubEnv("AFFITOR_AGENT_DEV_API_ORIGIN", ""); });
+  it.each([
+    "https://untrusted.example.test", "https://api.affitor.com.example.test",
+    "https://other.affitor.com", "https://api.affitor.com:8443",
+    "http://127.0.0.1:1337", "https://localhost:1337",
+  ])("rejects %s before attaching a JWT or making HTTP requests", origin => {
+    const request = vi.fn(); vi.stubGlobal("fetch", request);
+    expect(() => new ProgramAgentClient("fixture_user_jwt", origin)).toThrow(AgentSetupError);
+    expect(request).not.toHaveBeenCalled();
+  });
+  it("permits only the production origin by default", async () => {
+    const request = vi.fn(async () => new Response(JSON.stringify({ data: [{ id: 10, name: "Fixture" }] })));
+    vi.stubGlobal("fetch", request);
+    expect(agentApiOrigin("https://API.AFFITOR.COM:443/")).toBe("https://api.affitor.com");
+    await new ProgramAgentClient("fixture_user_jwt", "https://api.affitor.com").programs();
+    expect(request).toHaveBeenCalledWith("https://api.affitor.com/api/v1/cli/programs", expect.objectContaining({ headers: expect.objectContaining({ Authorization: "Bearer fixture_user_jwt" }) }));
+  });
+  it.each(["http://127.0.0.1:1337", "http://localhost:1337", "https://[::1]:1337"])("requires an exact explicit loopback development origin: %s", origin => {
+    vi.stubEnv("AFFITOR_AGENT_DEV_API_ORIGIN", origin);
+    expect(agentApiOrigin(origin)).toBe(origin);
+    expect(() => agentApiOrigin(origin.replace(":1337", ":1338"))).toThrow(AgentSetupError);
+  });
+  it.each(["https://untrusted.example.test", "https://other.affitor.com", "http://localhost:1337/path", "http://user:pass@localhost:1337", "*"])("development configuration cannot authorize %s", value => {
+    vi.stubEnv("AFFITOR_AGENT_DEV_API_ORIGIN", value);
+    const request = vi.fn(); vi.stubGlobal("fetch", request);
+    expect(() => new ProgramAgentClient("fixture_user_jwt", value)).toThrow(AgentSetupError);
+    expect(request).not.toHaveBeenCalled();
+    expect(agentApiOrigin("https://api.affitor.com")).toBe("https://api.affitor.com");
+  });
 });
 
 describe("authenticated per-client setup against local HTTP CMS", () => {
@@ -200,6 +234,20 @@ describe("authenticated per-client setup against local HTTP CMS", () => {
 });
 
 describe("built command and generated launcher", () => {
+  it("refuses an unconfigured local origin before HTTP or agent-file writes", async () => {
+    const root = project(), cms = await fixture();
+    vi.stubEnv("AFFITOR_AGENT_DEV_API_ORIGIN", "");
+    const login = JSON.stringify({ token: "fixture_user_jwt", expires_at: "2099-01-01T00:00:00Z" });
+    put(root, ".affitor/credentials.json", login);
+    const result = await run(root, ["agent", "setup", "--client", "claude_code", "--program-id", "10", "--yes", "--json", "--api-url", cms.origin]);
+    expect(result.status).toBe(1);
+    expect(JSON.parse(result.stdout)).toMatchObject({ status: "error", revoke_failed_ids: [] });
+    expect(result.stdout).not.toContain("fixture_user_jwt");
+    expect(cms.requests).toHaveLength(0);
+    expect(existsSync(join(root, ".mcp.json"))).toBe(false);
+    expect(existsSync(join(root, ".affitor/agents"))).toBe(false);
+    expect(readFileSync(join(root, ".affitor/credentials.json"), "utf8")).toBe(login);
+  });
   it("dry-run/no consent/missing login never mint or write, and never print credentials", async () => {
     const root = project(), cms = await fixture(); put(root, ".affitor/config.json", '{"program_id":"10","api_key":"fake_legacy_key"}');
     for (const args of [["--dry-run"], [], ["--yes"]]) {
