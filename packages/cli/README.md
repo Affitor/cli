@@ -24,9 +24,12 @@ entries exclude backups and `.affitor/.env`. Updates use atomic replacement and
 read-back, rolling back prior writes on failure. Backups and their local ignore
 guard are kept on failure so a restored root `.gitignore` cannot expose them.
 An existing backup guard must contain only `*`; negation or extra rules are refused.
+It is installed before any merged config is written. Temporary writes stay under
+this private, ignored backup directory, including after abrupt process termination.
 Credential and backup ignore rules are appended at the end of both the root
 `.gitignore` and `.affitor/.gitignore`, preserving earlier custom rules while
-overriding negations. Existing files are backed up before changing them.
+overriding negations. Existing files are backed up before changing them. The child
+guard also protects `credentials.json` when a project directory is your home.
 A concurrent edit is preserved;
 inspect the files and private backups before retrying. This protects ordinary
 local edits, not a hostile process racing filesystem operations.
@@ -46,7 +49,8 @@ A recovery skill is installed in `.claude/skills/affitor/` or `.cursor/skills/af
 Codex gets `.agents/skills/affitor/` and a printed `codex mcp add` command; setup
 does not edit its TOML config or run that command. Review it, then run it yourself.
 If you move the project, run setup again to update absolute paths. The printed
-command uses POSIX shell quoting on macOS/Linux. On Windows, no shell command
+command uses POSIX shell quoting on macOS/Linux. Plan notes flag machine-specific
+absolute paths: keep generated MCP configs local or regenerate on each machine. On Windows, no shell command
 is generated: add the MCP in Codex settings using `command: "node"` and the exact
 absolute path from the preview's `entry.args` as one argument. Do not paste POSIX
 commands into cmd.exe.
@@ -57,7 +61,11 @@ or prove the key works. It returns `aligned`/`stale`/`missing`/`manual`/`invalid
 per client and `present_unverified`/`missing` for credentials. With no selection,
 doctor checks existing JSON client configs; an agent caller checks itself.
 Exit0 means all selected static checks align and a credential is present;
-otherwise exit1. Restart the agent and ask it to call `affitor_readiness`, checking
+otherwise exit1. A `credential_tracked` warning also returns exit1: doctor checks
+Git when available without changing its index, including when the repository root is above the
+project. Rotate an exposed key and remove it from tracking/history using your
+repository process; adding an ignore rule does not untrack a credential.
+Restart the agent and ask it to call `affitor_readiness`, checking
 the program identity before integration. Only report the readiness checks that pass.
 
 Doctor and the launcher use the same credential parser: empty, duplicate and
@@ -65,6 +73,12 @@ interpolated assignments fail closed. An explicit nonempty environment value
 takes precedence and is validated without reading a file. On Windows, the
 launcher runs `npx.cmd` through `cmd.exe` with a constant command; project paths
 and credentials are passed through `cwd`/environment, outside shell text.
+`NoDefaultCurrentDirectoryInExePath=1` prevents a project-root `npx.cmd` from
+shadowing the PATH executable. The child receives only runtime paths, home/temp,
+locale/terminal settings and the program key; parent proxy, Node options, npm
+overrides and unrelated credentials are dropped. The public npm registry is
+explicit. Project code, the generated launcher, PATH and project `.npmrc` still
+belong to your trusted local environment; this installer is not a sandbox.
 
 This local installer uses an existing program key. Per-agent key issuance,
 pairing, connection telemetry, and the dashboard Agents page are separate work;

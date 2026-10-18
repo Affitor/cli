@@ -3,6 +3,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSy
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
+import { pathToFileURL } from "node:url";
 import { applySetup, doctor, planSetup, selectedClients } from "../src/lib/agent-setup.js";
 import { AGENT_LAUNCHER, parseProgramCredential } from "../src/lib/agent-launcher.js";
 
@@ -76,6 +77,49 @@ describe("local transaction", () => {
     expect(spawnSync("git", ["-C", dir, "check-ignore", ".affitor/.env"]).status).toBe(0);
     expect(readFileSync(join(dir, ".affitor/.env"), "utf8")).toBe("AFFITOR_API_KEY=fake_gitignore_key\n");
     expect(planSetup(dir, ["claude_code"]).actions.every(a => a.operation === "unchanged")).toBe(true);
+  });
+  it("warns that generated MCP entries contain machine-specific absolute paths", () => {
+    const plan = planSetup(project(), ["claude_code"]);
+    expect(plan.notes).toContain("MCP entries contain this machine's absolute project path. Keep configs local or regenerate them on each teammate's machine.");
+  });
+  it("protects the global login-token filename when a project is a home directory", () => {
+    const dir = project();
+    expect(spawnSync("git", ["init", "-q", dir]).status).toBe(0);
+    put(dir, ".affitor/credentials.json", '{"token":"fake_login_token"}');
+    applySetup(planSetup(dir, ["claude_code"]));
+    expect(spawnSync("git", ["-C", dir, "check-ignore", ".affitor/credentials.json"]).status).toBe(0);
+    expect(readFileSync(join(dir, ".affitor/credentials.json"), "utf8")).toBe('{"token":"fake_login_token"}');
+  });
+  it("keeps a secret-bearing temp private when the process exits before rename", () => {
+    const dir = project();
+    expect(spawnSync("git", ["init", "-q", dir]).status).toBe(0);
+    const original = '{"mcpServers":{"other":{"env":{"TOKEN":"fake_private_config"}}}}';
+    put(dir, ".mcp.json", original);
+    const module = pathToFileURL(resolve("dist/lib/agent-setup.js")).href;
+    const script = `const fs=require('node:fs');const rename=fs.renameSync;fs.renameSync=(from,to)=>{if(fs.readFileSync(from,'utf8').includes('fake_private_config')){process.stdout.write(JSON.stringify({temporary:from}));process.exit(99);}return rename(from,to);};require('node:module').syncBuiltinESMExports();import(${JSON.stringify(module)}).then(({applySetup,planSetup})=>applySetup(planSetup(process.cwd(),['claude_code'])));`;
+    const child = spawnSync(process.execPath, ["-e", script], { cwd: dir, env: cleanEnv, encoding: "utf8" });
+    expect(child.status, child.stderr).toBe(99);
+    const temporary = JSON.parse(child.stdout).temporary;
+    expect(readFileSync(join(dir, ".mcp.json"), "utf8")).toBe(original);
+    expect(spawnSync("git", ["-C", dir, "check-ignore", temporary]).status).toBe(0);
+    expect(temporary.startsWith(join(dir, ".affitor/backups") + "/")).toBe(true);
+    expect(existsSync(join(dir, ".gitignore"))).toBe(false);
+  });
+  it("doctor detects tracked credentials when Git root is above the project", () => {
+    const root = project(), dir = join(root, "nested");
+    mkdirSync(dir);
+    expect(spawnSync("git", ["init", "-q", root]).status).toBe(0);
+    applySetup(planSetup(dir, ["claude_code"]));
+    put(dir, ".affitor/.env", "AFFITOR_API_KEY=fake_tracked_key\n");
+    expect(spawnSync("git", ["-C", dir, "add", "-f", "--", ".affitor/.env"]).status).toBe(0);
+    const index = spawnSync("git", ["-C", root, "ls-files", "--stage"], { encoding: "utf8" }).stdout;
+    const checked = doctor(dir, ["claude_code"])[0];
+    expect(checked.warnings).toContain("credential_tracked");
+    const result = spawnSync(process.execPath, [resolve("dist/cli.js"), "doctor", "--client", "claude_code", "--json"], { cwd: dir, env: cleanEnv, encoding: "utf8" });
+    expect(result.status).toBe(1);
+    expect(JSON.parse(result.stdout).status).toBe("needs_attention");
+    expect(result.stdout).not.toContain("fake_tracked_key");
+    expect(spawnSync("git", ["-C", root, "ls-files", "--stage"], { encoding: "utf8" }).stdout).toBe(index);
   });
   it("preserves unrelated entries, backs up original bytes privately, sets0600 and is idempotent", () => {
     const dir = project(), original = '{ "mcpServers": {"other":{"env":{"TOKEN":"fake-private-value"}}}, "keep":123 }';
@@ -184,7 +228,7 @@ describe("real generated launcher without network", () => {
   }
   function install(dir: string) {
     put(dir, ".affitor/agent-mcp.cjs", AGENT_LAUNCHER);
-    put(dir, "bin/npx", `#!${process.execPath}\nprocess.stdout.write(JSON.stringify({args:process.argv.slice(2),cwd:process.cwd(),key:process.env.AFFITOR_API_KEY,write:process.env.AFFITOR_MCP_WRITE,url:process.env.AFFITOR_API_URL??null,aliases:Object.keys(process.env).filter(k=>k.toUpperCase()==="AFFITOR_API_URL"||k.toUpperCase()==="AFFITOR_MCP_WRITE")}));\n`);
+    put(dir, "bin/npx", `#!${process.execPath}\nprocess.stdout.write(JSON.stringify({args:process.argv.slice(2),cwd:process.cwd(),key:process.env.AFFITOR_API_KEY,write:process.env.AFFITOR_MCP_WRITE,url:process.env.AFFITOR_API_URL??null,unsafe:Object.keys(process.env).filter(k=>/^(https?_proxy|all_proxy|node_options|npm_config_registry|unrelated_secret)$/i.test(k)),noCwd:process.env.NoDefaultCurrentDirectoryInExePath??null,aliases:Object.keys(process.env).filter(k=>k.toUpperCase()==="AFFITOR_API_URL"||k.toUpperCase()==="AFFITOR_MCP_WRITE")}));\n`);
     chmodSync(join(dir, "bin/npx"), 0o700);
   }
   it("reads the project program key, pins MCP, fixes cwd and disables inherited money tools", () => {
@@ -192,7 +236,7 @@ describe("real generated launcher without network", () => {
     put(dir, ".affitor/.env", "# fixture only\nexport AFFITOR_API_KEY='fake_program_key'\n");
     const result = launch(dir);
     expect(result.status).toBe(0);
-    expect(JSON.parse(result.stdout)).toEqual({ args: ["-y", "@affitor/mcp@0.2.2"], cwd: dir, key: "fake_program_key", write: "0", url: null, aliases: ["AFFITOR_MCP_WRITE"] });
+    expect(JSON.parse(result.stdout)).toEqual({ args: ["--registry=https://registry.npmjs.org", "-y", "@affitor/mcp@0.2.2"], cwd: dir, key: "fake_program_key", write: "0", url: null, unsafe: [], noCwd: "1", aliases: ["AFFITOR_MCP_WRITE"] });
   });
   it("removes mixed-case API overrides and write aliases before spawning MCP", () => {
     const dir = project(); install(dir);
@@ -203,6 +247,16 @@ describe("real generated launcher without network", () => {
     expect(child.url).toBe(null);
     expect(child.write).toBe("0");
     expect(child.aliases).toEqual(["AFFITOR_MCP_WRITE"]);
+  });
+  it("scrubs proxy, Node options, npm registry and unrelated secrets from the actual child", () => {
+    const dir = project(); install(dir);
+    put(dir, ".affitor/.env", "AFFITOR_API_KEY=fake_file_key");
+    const result = launch(dir, { HTTPS_PROXY: "http://wrong.invalid", ALL_PROXY: "http://wrong.invalid", NODE_OPTIONS: "--no-warnings", npm_config_registry: "https://wrong.invalid", UNRELATED_SECRET: "fake_unrelated_secret" });
+    expect(result.status, result.stderr).toBe(0);
+    const child = JSON.parse(result.stdout);
+    expect(child.unsafe).toEqual([]);
+    expect(child.noCwd).toBe("1");
+    expect(child.key).toBe("fake_file_key");
   });
   it("prefers an explicitly inherited program key", () => {
     const dir = project(); install(dir);
