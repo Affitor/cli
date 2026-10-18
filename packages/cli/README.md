@@ -49,6 +49,12 @@ path in a worktree or an actual directory outside any repository. A timeout,
 missing executable, unreadable repository or unexpected exit blocks setup before
 any API call or write.
 
+On Windows, POSIX mode0600 does not establish private Windows access-control
+permissions, and the CLI does not configure or audit those permissions. Keep the
+project under your Windows user profile in a folder with restricted access.
+Check inherited permissions before storing credentials or backups in shared
+folders. The owner-only mode checks above apply to macOS and Linux.
+
 Claude Code uses project `.mcp.json`; Cursor uses `.cursor/mcp.json`. Their entries
 contain only `node`, an absolute `.affitor/agent-mcp.cjs` path and a client selector.
 No credential appears in MCP config, the launcher, skill, plan or command output.
@@ -76,6 +82,13 @@ fails, setup attempts to revoke every newly minted key whose id it received.
 Waiting row. Review unused Waiting credentials in Settings → Agents and revoke them
 before retrying. An unknown mint result is not reported as a successful rollback.
 Reuse does not revoke pre-existing keys when a local update fails.
+
+An abrupt interruption, such as closing the terminal after minting, may also leave
+a Waiting credential even when no error JSON was printed and no local credential
+file exists. Before retrying, review newly created Waiting rows for the selected
+client in Settings → Agents and revoke unused credentials from that attempt.
+Keep credentials used by other agents. Then run a fresh dry-run and approve setup
+again; a static `doctor` result cannot prove that a server credential was cleaned up.
 
 A recovery skill is installed in `.claude/skills/affitor/` or `.cursor/skills/affitor/`.
 Codex gets `.agents/skills/affitor/` and a printed command; setup does not edit its
