@@ -17,6 +17,34 @@ export function parseProgramCredential(envKey: unknown, readText: () => string |
   } catch { return null; }
 }
 
+export interface StoredAgentCredential {
+  version: 1;
+  id: number;
+  program_id: number;
+  client: string;
+  api_url: string;
+  created_at: string;
+  credential_note: string;
+  api_key: string;
+}
+
+/** Shared with the standalone launcher; private files never supply executable code. */
+export function parseStoredAgentCredential(text: string, client: string): StoredAgentCredential | null {
+  try {
+    const value = JSON.parse(text);
+    if (!value || value.version !== 1 || value.client !== client ||
+      !["claude_code", "cursor", "codex"].includes(client) ||
+      !Number.isSafeInteger(value.id) || value.id <= 0 ||
+      !Number.isSafeInteger(value.program_id) || value.program_id <= 0 ||
+      typeof value.api_key !== "string" || !/^aff_ag_[A-Za-z0-9_-]{43}$/.test(value.api_key) ||
+      typeof value.api_url !== "string") return null;
+    const url = new URL(value.api_url);
+    if (url.origin !== value.api_url || url.username || url.password ||
+      (url.protocol !== "https:" && !(url.protocol === "http:" && ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname)))) return null;
+    return value as StoredAgentCredential;
+  } catch { return null; }
+}
+
 /** Minimal runtime environment; never forward parent networking, Node or npm overrides. */
 export function agentChildEnvironment(source: NodeJS.ProcessEnv, key: string): NodeJS.ProcessEnv {
   const allowed = ["PATH", "HOME", "USERPROFILE", "APPDATA", "LOCALAPPDATA", "SYSTEMROOT", "WINDIR", "COMSPEC", "PATHEXT", "TMP", "TEMP", "TMPDIR", "LANG", "TERM", "COLORTERM", "NO_COLOR", "FORCE_COLOR"];
@@ -37,19 +65,34 @@ const { join, resolve } = require('node:path');
 const { spawn } = require('node:child_process');
 const project = resolve(__dirname, '..');
 const parseProgramCredential = ${parseProgramCredential.toString()};
-const key = parseProgramCredential(process.env.AFFITOR_API_KEY, () => {
+const selector = process.argv[2];
+const parseStoredAgentCredential = ${parseStoredAgentCredential.toString()};
+let stored = null;
+if (selector !== undefined) {
+  try {
+    if (!['claude_code', 'cursor', 'codex'].includes(selector) || process.argv.length !== 3) throw new Error();
+    const directory = join(__dirname, 'agents');
+    const parent = lstatSync(directory);
+    const path = join(directory, selector + '.json');
+    const stat = lstatSync(path);
+    if (!parent.isDirectory() || parent.isSymbolicLink() || !stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1) throw new Error();
+    stored = parseStoredAgentCredential(readFileSync(path, 'utf8'), selector);
+  } catch {}
+}
+const key = selector !== undefined ? stored?.api_key : parseProgramCredential(process.env.AFFITOR_API_KEY, () => {
   const path = join(__dirname, '.env');
   const stat = lstatSync(path);
   if (!stat.isFile() || stat.isSymbolicLink()) return null;
   return readFileSync(path, 'utf8');
 });
 if (!key) {
-  process.stderr.write('Affitor: set AFFITOR_API_KEY or configure this project with affitor init. No agent call was made.\\n');
+  process.stderr.write('Affitor: credential missing or invalid. Run affitor agent setup for this client; no agent call was made.\\n');
   process.exit(1);
 }
 // Setup never opts into the sale/refund tools, including through inherited env.
 const agentChildEnvironment = ${agentChildEnvironment.toString()};
 const env = agentChildEnvironment(process.env, key);
+if (stored) env.AFFITOR_API_URL = stored.api_url;
 // Windows batch files require cmd.exe. The command contains constants only:
 // project paths and credentials travel through cwd/env, never shell text.
 const windows = process.platform === 'win32';
@@ -84,6 +127,6 @@ Do not run sale/refund tools. Ask before running synthetic verification or other
 | --- | --- |
 | Missing or stale local files | Run affitor agent setup --dry-run --json, show the plan, then apply the selected client after approval. |
 | Files aligned, tools absent | Restart the selected agent, then call affitor_readiness. |
-| Credential missing or rejected | Configure AFFITOR_API_KEY privately for this program. Never paste the key into chat. |
+| Credential missing or rejected | Run affitor login, then affitor agent setup for this client and program. Never paste any key into chat. |
 | Readiness fails | Report the failed checks and follow the runbook; do not claim integration is verified. |
 `;
