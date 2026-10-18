@@ -46,7 +46,7 @@ It runs the **detect → wire → inject → verify** flow:
 3. **Review sale tracking** — if the program has a Stripe account bound in Affitor, the webhook stays unchanged to avoid a second sale path. Otherwise, the CLI asks whether Connect could still report sales, including shared accounts and delayed events after disconnect. Only an interactive answer ruling that out, followed by confirmation of the proposed diff, can add `affitor.trackSale`. `--yes`, `--no-interactive` and `--json` leave Stripe webhooks unchanged when Connect cannot be ruled out. A conflicting runtime API key always requires manual review. Non-Stripe stacks and unrecognized webhooks get a recipe to review and add manually.
 4. **Verify** — fires the synthetic click → lead → sale chain, then **polls readiness until `integration_verified`** (or reports the blocking gate + next action).
 
-It is **idempotent** — re-running skips work already done (existing env key, sale call already present) and never overwrites a different `AFFITOR_API_KEY`.
+It is **idempotent** — re-running skips work already done (existing env key, sale call already present) and never overwrites a different `AFFITOR_API_KEY`. Multiple assignments are treated as a conflict: resolve them manually before trusting the Connect status or adding sale tracking.
 
 | Flag | Description |
 |---|---|

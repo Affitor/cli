@@ -9,7 +9,7 @@ import { AffitorAPI, APIError, NetworkError } from "../lib/api-client.js";
 import { resolveApiKey } from "../lib/config.js";
 import { confirmAction } from "../lib/prompts.js";
 import { detectStack, type Framework } from "../lib/stack-detect.js";
-import { detectPaymentProvider } from "../lib/server-tracking.js";
+import { detectPaymentProvider, serverTrackingSnippets } from "../lib/server-tracking.js";
 import { detectStripeWebhook } from "../lib/webhook-detect.js";
 import { injectStripeTrackSale } from "../lib/inject.js";
 import { runInstallWizard } from "../lib/wizard.js";
@@ -201,12 +201,17 @@ export async function readStripeAccountBound(api: Pick<AffitorAPI, "getStatus">)
 }
 
 /** The env file onboard writes the key to (.env.local for Next, else .env) and the key already there. */
-export function envApiKey(cwd: string): { envName: string; value?: string } {
+export function envApiKey(cwd: string): { envName: string; value?: string; ambiguous?: boolean } {
   const envName = existsSync(join(cwd, ".env.local")) ? ".env.local" : ".env";
   const envPath = join(cwd, envName);
   if (!existsSync(envPath)) return { envName };
-  const m = readFileSync(envPath, "utf8").match(/^\s*(?:export\s+)?AFFITOR_API_KEY\s*=(.*)$/m);
-  return { envName, value: m ? m[1].trim() : undefined };
+  const assignments = readFileSync(envPath, "utf8").split(/\r?\n/)
+    .filter(line => /^\s*(?:export\s+)?AFFITOR_API_KEY\s*=/.test(line));
+  // Frameworks and dotenv loaders differ on precedence. Never choose one assignment
+  // on the application's behalf, even when duplicate values happen to match today.
+  if (assignments.length > 1) return { envName, ambiguous: true };
+  const value = assignments[0]?.replace(/^\s*(?:export\s+)?AFFITOR_API_KEY\s*=\s*/, "").trim();
+  return { envName, value };
 }
 
 /**
@@ -222,7 +227,7 @@ async function stripeBindingFor(
 ): Promise<{ bound: true | undefined; keyMismatch: boolean }> {
   const env = envApiKey(cwd);
   const processKey = process.env.AFFITOR_API_KEY;
-  if ((env.value !== undefined && env.value !== apiKey) || (processKey && processKey !== apiKey)) {
+  if (env.ambiguous || (env.value !== undefined && env.value !== apiKey) || (processKey && processKey !== apiKey)) {
     if (!json) {
       logger.warn(`The existing AFFITOR_API_KEY in the environment or ${env.envName} may differ from this key. Resolve that conflict before adding sale tracking.`);
     }
@@ -271,6 +276,13 @@ export async function wireServerSale(args: WireSaleArgs): Promise<OnboardStep> {
   }
   if (connected !== false) {
     return skipSaleForConnect({ cwd, framework, recipe, hook, json, unknown: connected === undefined });
+  }
+
+  if (!json) {
+    logger.titledBox("Manual tracking: handle refunds too", [
+      "", "  On refund, reverse the commission using the same id you passed to trackSale:",
+      ...serverTrackingSnippets("stripe").refund.split("\n").map(line => `  ${line}`), "",
+    ]);
   }
 
   if (!hook) {
@@ -348,9 +360,65 @@ export async function wireServerSale(args: WireSaleArgs): Promise<OnboardStep> {
   return { step: "server_sale", status: "ok", detail: hook.file };
 }
 
-/** A trackSale call on a line that is not a comment. */
+/** Find call tokens outside comments/literals; template interpolation is executable code. */
 export function callsTrackSale(source: string): boolean {
-  return source.split("\n").some((line) => /\btrackSale\s*\(/.test(line) && !/^\s*(\/\/|\/\*|\*)/.test(line));
+  let i = 0;
+  let found = false;
+  function quoted(quote: string) {
+    i++;
+    while (i < source.length) {
+      if (source[i] === "\\") { i += 2; continue; }
+      if (source[i++] === quote) break;
+    }
+  }
+  function template() {
+    i++;
+    while (i < source.length) {
+      if (source[i] === "\\") { i += 2; continue; }
+      if (source[i] === "`") { i++; return; }
+      if (source[i] === "$" && source[i + 1] === "{") { i += 2; code(true); }
+      else i++;
+    }
+  }
+  function code(interpolation = false) {
+    let previous = "";
+    let depth = 0;
+    while (i < source.length) {
+      const c = source[i];
+      if (/\s/.test(c)) { i++; continue; }
+      if (source.startsWith("//", i)) {
+        const end = source.indexOf("\n", i + 2); i = end < 0 ? source.length : end; continue;
+      }
+      if (source.startsWith("/*", i)) {
+        const end = source.indexOf("*/", i + 2); i = end < 0 ? source.length : end + 2; continue;
+      }
+      if (c === "'" || c === '"') { quoted(c); previous = "literal"; continue; }
+      if (c === "`") { template(); previous = "literal"; continue; }
+      // A regex literal can contain call-like text too. Distinguish it from division
+      // at expression starts; slash escapes and character classes belong to the literal.
+      if (c === "/" && (!previous || ["=", "(", ":", ",", "[", "!", "return", "=>"].includes(previous))) {
+        i++; let inClass = false;
+        while (i < source.length) {
+          if (source[i] === "\\") { i += 2; continue; }
+          if (source[i] === "[") inClass = true;
+          if (source[i] === "]") inClass = false;
+          if (source[i++] === "/" && !inClass) break;
+        }
+        previous = "literal"; continue;
+      }
+      if (/[A-Za-z_$]/.test(c)) {
+        const start = i++;
+        while (i < source.length && /[\w$]/.test(source[i])) i++;
+        previous = source.slice(start, i); continue;
+      }
+      if (c === "(" && previous === "trackSale") found = true;
+      if (c === "{") depth++;
+      if (c === "}") { if (interpolation && depth === 0) { i++; return; } depth--; }
+      previous = c; i++;
+    }
+  }
+  code();
+  return found;
 }
 
 /**
@@ -463,13 +531,17 @@ function writeApiKeyToEnv(
   apiKey: string,
   opts: { autoConfirm: boolean; json: boolean },
 ): OnboardStep {
-  const { envName, value: existingValue } = envApiKey(cwd);
+  const { envName, value: existingValue, ambiguous } = envApiKey(cwd);
   const envPath = join(cwd, envName);
   const line = `AFFITOR_API_KEY=${apiKey}`;
 
   let content = "";
   if (existsSync(envPath)) {
     content = readFileSync(envPath, "utf8");
+    if (ambiguous) {
+      if (!opts.json) logger.warn(`${envName} has multiple AFFITOR_API_KEY assignments — resolve them manually. Nothing was changed.`);
+      return { step: "env_key", status: "manual", detail: `${envName}: duplicate assignments kept` };
+    }
     if (existingValue !== undefined) {
       if (existingValue === apiKey) {
         if (!opts.json) logger.step(`${envName} already has AFFITOR_API_KEY — skipped`);

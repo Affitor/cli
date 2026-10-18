@@ -199,8 +199,28 @@ describe("callsTrackSale", () => {
     expect(callsTrackSale("await affitor.trackSale({ invoiceId })")).toBe(true);
     expect(callsTrackSale("// trackSale is documented elsewhere")).toBe(false);
     expect(callsTrackSale("  // await affitor.trackSale({})")).toBe(false);
-    expect(callsTrackSale(" * see trackSale(input)")).toBe(false);
+
   });
+
+  it.each([
+    '/* example:\nawait affitor.trackSale({});\n*/',
+    'const example = "await affitor.trackSale({})";',
+    "const example = 'trackSale({})';",
+    'const example = `trackSale({})`;',
+    'const example = /trackSale(foo)/;',
+    'const example = `escaped \\` trackSale({})`;',
+  ])("ignores comment/string examples: %s", async source => {
+    expect(callsTrackSale(source)).toBe(false);
+    const dir = project(WEBHOOK.replace("await fulfill(session);", source));
+    expect((await wire(dir, { stripeAccountBound: true })).detail).not.toContain("already calls trackSale");
+  });
+
+  it.each([
+    '/* docs */ await affitor.trackSale /* review */ ({})',
+    'const message = `paid ${await affitor.trackSale({})}`;',
+    'const message = `nested ${{value: `call ${affitor.trackSale({})}`}}`;',
+    'const rate = total / count; await affitor.trackSale({});',
+  ])("retains real calls: %s", source => expect(callsTrackSale(source)).toBe(true));
 
   it("a comment mentioning trackSale is not reported as a double count", async () => {
     const commented = WEBHOOK.replace("await fulfill(session);", "// trackSale is documented elsewhere\n      await fulfill(session);");
@@ -296,6 +316,37 @@ describe("runOnboard reads the binding and passes it on", () => {
     expect(webhookOf(dir)).toBe(WEBHOOK);
     expect(readFileSync(join(dir, '.env'), 'utf8')).toBe(env);
     expect(confirmAction).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { json: true }, { noInteractive: true }, { autoConfirm: true }, {},
+  ])('duplicate env assignments fail closed through runOnboard (%j)', async flags => {
+    const env = 'AFFITOR_API_KEY=key_a\nexport AFFITOR_API_KEY = key_b\n';
+    const dir = app(env);
+    apiState.status = { stripe_account_bound: true };
+    confirmAction.mockResolvedValue(false);
+    await onboardIn(dir, { yes: false }, flags);
+    expect(webhookOf(dir)).toBe(WEBHOOK);
+    expect(readFileSync(join(dir, '.env'), 'utf8')).toBe(env);
+    expect(confirmAction).not.toHaveBeenCalled();
+    if (flags.json) {
+      const summary = JSON.parse(vi.mocked(console.log).mock.calls.at(-1)![0]);
+      expect(summary.steps).toContainEqual(expect.objectContaining({ step: 'server_sale', status: 'manual' }));
+      expect(summary.steps).toContainEqual(expect.objectContaining({ step: 'env_key', status: 'manual' }));
+    } else {
+      expect(wizardCalls[0].stripeRecordsSales).toBe('unknown');
+    }
+  });
+
+  it('prints manual refund advice after confirming the manual sale path', async () => {
+    const dir = app();
+    apiState.status = { stripe_account_bound: false };
+    confirmAction.mockResolvedValueOnce(false).mockResolvedValueOnce(true);
+    await onboardIn(dir, { yes: false });
+    expect(webhookOf(dir)).toContain('await affitor.trackSale({');
+    const output = vi.mocked(console.log).mock.calls.flat().join('\n');
+    expect(output).toContain('trackRefund');
+    expect(output).toContain('same id you passed to trackSale');
   });
 
   it('a runtime process key conflict cannot be overridden by answering the Connect question', async () => {
