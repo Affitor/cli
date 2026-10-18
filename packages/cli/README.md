@@ -2,6 +2,60 @@
 
 CLI-native affiliate tracking. Connect Stripe, track commissions, manage partners -- all from your terminal.
 
+## AI agent setup
+
+From the project root, preview the local installation before applying it:
+
+```bash
+affitor agent setup --client claude_code --dry-run --json
+affitor agent setup --client claude_code --yes
+affitor doctor --client claude_code --json
+```
+
+Choose `claude_code`, `cursor`, or `codex`; repeat `--client` for more than one.
+Without a selection, an interactive terminal asks, with nothing selected by default.
+Noninteractive runs require `--yes` and a selection. Inside an agent, setup can only
+configure that agent. `--dry-run` writes nothing. Without confirmation, setup exits1.
+
+Claude Code uses project `.mcp.json`; Cursor uses `.cursor/mcp.json`. Existing
+unrelated settings are preserved. Existing file bytes are backed up under
+`.affitor/backups/` before replacement, with mode0600; generated `.gitignore`
+entries exclude backups and `.affitor/.env`. Updates use atomic replacement and
+read-back, rolling back prior writes on failure. Backups and their local ignore
+guard are kept on failure so a restored root `.gitignore` cannot expose them.
+A concurrent edit is preserved;
+inspect the files and private backups before retrying. This protects ordinary
+local edits, not a hostile process racing filesystem operations.
+
+The generated `.affitor/agent-mcp.cjs` launcher starts pinned `@affitor/mcp@0.2.2`
+from this project's absolute directory. No credential is embedded in an agent
+config, launcher, or skill. The launcher reads inherited `AFFITOR_API_KEY`, then
+this project's `.affitor/.env` (created by `affitor init`). It never reads the user
+login token in `~/.affitor/credentials.json`. If `onboard` wrote a key to your root
+`.env`, provide it privately as `AFFITOR_API_KEY` when starting the agent instead.
+It uses the production API and disables sale/refund tools even when the parent
+environment has `AFFITOR_MCP_WRITE=1`. Other tools still include tracking and
+synthetic verification; approve those actions separately.
+
+A recovery skill is installed in `.claude/skills/affitor/` or `.cursor/skills/affitor/`.
+Codex gets `.agents/skills/affitor/` and a printed `codex mcp add` command; setup
+does not edit its TOML config or run that command. Review it, then run it yourself.
+If you move the project, run setup again to update absolute paths. The printed
+command uses POSIX shell quoting.
+
+**Installed is not verified.** Successful setup returns `needs_human` (exit0).
+`doctor` is read-only and static: it does not start an agent, connect to the API,
+or prove the key works. It returns `aligned`/`stale`/`missing`/`manual`/`invalid`
+per client and `present_unverified`/`missing` for credentials. With no selection,
+doctor checks existing JSON client configs; an agent caller checks itself.
+Exit0 means all selected static checks align and a credential is present;
+otherwise exit1. Restart the agent and ask it to call `affitor_readiness`, checking
+the program identity before integration. Only report the readiness checks that pass.
+
+This local installer uses an existing program key. Per-agent key issuance,
+pairing, connection telemetry, and the dashboard Agents page are separate work;
+this command does not claim to create or verify an agent connection.
+
 ## Quick Start
 
 ```bash
