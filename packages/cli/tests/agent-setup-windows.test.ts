@@ -6,30 +6,38 @@ import { spawnSync } from "node:child_process";
 
 // Runs on the real Windows CI worker, rather than mocking process.platform.
 describe.skipIf(process.platform !== "win32")("Windows generated launcher smoke", () => {
-  it("starts npx.cmd through cmd.exe with a metacharacter project path and no money tools", () => {
+  it("ignores a cwd npx.cmd decoy and starts the PATH tool with a safe environment", () => {
     const fixture = realpathSync(mkdtempSync(join(tmpdir(), "affitor-windows-")));
     const project = join(fixture, "project & (spaces) %NO_EXPAND%");
     const bin = join(project, "bin");
     mkdirSync(bin, { recursive: true });
-    const env: NodeJS.ProcessEnv = Object.fromEntries(Object.entries(process.env).filter(([key]) => !["path", "affitor_api_key", "affitor_api_url", "affitor_mcp_write", "claudecode", "codex", "codex_thread_id", "cursor_agent"].includes(key.toLowerCase())));
+    const env: NodeJS.ProcessEnv = Object.fromEntries(Object.entries(process.env).filter(([key]) => !["path", "affitor_api_key", "affitor_api_url", "affitor_mcp_write", "nodefaultcurrentdirectoryinexepath", "claudecode", "codex", "codex_thread_id", "cursor_agent"].includes(key.toLowerCase())));
     env.PATH = bin;
     env.Affitor_Mcp_Write = "1";
     env.affitor_api_url = "https://wrong.invalid";
     env.NO_EXPAND = "wrong-path";
+    env.NODE_OPTIONS = "--no-warnings";
+    env.HTTPS_PROXY = "http://wrong.invalid";
+    env.npm_config_registry = "https://wrong.invalid";
     const cli = resolve("dist/cli.js");
     try {
       const setup = spawnSync(process.execPath, [cli, "agent", "setup", "--client", "claude_code", "--yes", "--json"], { cwd: project, env, encoding: "utf8" });
       expect(setup.status, setup.stderr + setup.stdout).toBe(0);
       writeFileSync(join(project, ".affitor/.env"), "AFFITOR_API_KEY=fake_windows_key\r\n");
-      writeFileSync(join(bin, "npx-fixture.cjs"), 'process.stdout.write(JSON.stringify({args:process.argv.slice(2),cwd:process.cwd(),key:process.env.AFFITOR_API_KEY,write:process.env.AFFITOR_MCP_WRITE,overrides:Object.keys(process.env).filter(k=>k.toUpperCase()==="AFFITOR_API_URL"||k.toUpperCase()==="AFFITOR_MCP_WRITE")}));');
+      writeFileSync(join(bin, "npx-fixture.cjs"), 'process.stdout.write(JSON.stringify({args:process.argv.slice(2),cwd:process.cwd(),key:process.env.AFFITOR_API_KEY,write:process.env.AFFITOR_MCP_WRITE,noCwd:process.env.NoDefaultCurrentDirectoryInExePath,unsafe:Object.keys(process.env).filter(k=>/^(https?_proxy|node_options|npm_config_registry)$/i.test(k)),overrides:Object.keys(process.env).filter(k=>k.toUpperCase()==="AFFITOR_API_URL"||k.toUpperCase()==="AFFITOR_MCP_WRITE")}));');
       writeFileSync(join(bin, "npx.cmd"), `@"${process.execPath}" "%~dp0npx-fixture.cjs" %*\r\n`);
+      writeFileSync(join(project, "npx.cmd"), "@echo DECOY_CWD\r\n@exit /b 91\r\n");
       // Reproduce r1 on the same real Windows worker and the same fixture.
       const baseline = spawnSync("npx.cmd", ["-y", "@affitor/mcp@0.2.2"], { cwd: project, env, shell: false, encoding: "utf8", timeout: 15000 });
       expect(baseline.status).not.toBe(0);
       expect(baseline.error).toBeDefined();
+      // The pre-hardening constant cmd command resolves the decoy from cwd.
+      const unsafeLookup = spawnSync(process.env.ComSpec || "cmd.exe", ["/d", "/s", "/c", "npx.cmd -y @affitor/mcp@0.2.2"], { cwd: project, env, encoding: "utf8", timeout: 15000 });
+      expect(unsafeLookup.status, unsafeLookup.stderr + unsafeLookup.stdout).toBe(91);
+      expect(unsafeLookup.stdout).toContain("DECOY_CWD");
       const launcher = spawnSync(process.execPath, [join(project, ".affitor/agent-mcp.cjs")], { cwd: fixture, env, encoding: "utf8", timeout: 15000 });
       expect(launcher.status, launcher.stderr + launcher.stdout).toBe(0);
-      expect(JSON.parse(launcher.stdout)).toEqual({ args: ["-y", "@affitor/mcp@0.2.2"], cwd: project, key: "fake_windows_key", write: "0", overrides: ["AFFITOR_MCP_WRITE"] });
+      expect(JSON.parse(launcher.stdout)).toEqual({ args: ["--registry=https://registry.npmjs.org", "-y", "@affitor/mcp@0.2.2"], cwd: project, key: "fake_windows_key", write: "0", noCwd: "1", unsafe: [], overrides: ["AFFITOR_MCP_WRITE"] });
       const doctor = spawnSync(process.execPath, [cli, "doctor", "--client", "claude_code", "--json"], { cwd: project, env, encoding: "utf8" });
       expect(doctor.status, doctor.stderr + doctor.stdout).toBe(0);
       expect(JSON.parse(doctor.stdout).clients[0].credential).toBe("present_unverified");

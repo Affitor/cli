@@ -1,7 +1,8 @@
 import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
-import { AGENT_LAUNCHER, AGENT_SKILL, MCP_VERSION, parseProgramCredential } from "./agent-launcher.js";
+import { spawnSync } from "node:child_process";
+import { AGENT_LAUNCHER, AGENT_SKILL, MCP_VERSION, parseProgramCredential, agentChildEnvironment } from "./agent-launcher.js";
 
 export const CLIENTS = ["claude_code", "cursor", "codex"] as const;
 export type AgentClient = typeof CLIENTS[number];
@@ -20,6 +21,7 @@ export interface SetupPlan {
   entry: { command: string; args: string[] };
   actions: FileAction[];
   manual: string[];
+  notes: string[];
 }
 const snapshots = new WeakMap<SetupPlan, Map<string, string | null>>();
 
@@ -78,7 +80,7 @@ export function planSetup(cwd: string, clients: AgentClient[]): SetupPlan {
   const project = realpathSync(resolve(cwd));
   const launcher = join(project, ".affitor/agent-mcp.cjs");
   const entry = { command: "node", args: [launcher] };
-  const plan: SetupPlan = { project, clients, entry, mcpVersion: MCP_VERSION, actions: [], manual: [] };
+  const plan: SetupPlan = { project, clients, entry, mcpVersion: MCP_VERSION, actions: [], manual: [], notes: clients.length ? ["MCP entries contain this machine's absolute project path. Keep configs local or regenerate them on each teammate's machine."] : [] };
   const before = new Map<string, string | null>();
   const add = (rel: string, content: string, expectedOriginal?: string | null) => {
     const path = join(project, rel);
@@ -124,8 +126,8 @@ export function planSetup(cwd: string, clients: AgentClient[]): SetupPlan {
     // The final matching rule wins at each directory level. Existing negations
     // must not cancel protection; a child guard also outranks root ignore rules.
     for (const [rel, entries] of [
-      [".gitignore", ["/.affitor/.env", "/.affitor/backups/"]],
-      [".affitor/.gitignore", ["/.env", "/backups/"]],
+      [".gitignore", ["/.affitor/.env", "/.affitor/backups/", "/.affitor/credentials.json"]],
+      [".affitor/.gitignore", ["/.env", "/backups/", "/credentials.json"]],
     ] as const) {
       const raw = readTarget(project, join(project, rel));
       const prior = raw ?? "";
@@ -133,7 +135,7 @@ export function planSetup(cwd: string, clients: AgentClient[]): SetupPlan {
       add(rel, prior.endsWith(suffix) ? prior : prior + (prior && !prior.endsWith("\n") ? "\n" : "") + suffix, raw);
     }
   }
-  if (plan.actions.some(action => action.backup)) {
+  if (clients.length) {
     const guard = join(project, ".affitor/backups/.gitignore");
     const raw = readTarget(project, guard);
     if (raw !== null && !["*", "*\n", "*\r\n"].includes(raw)) throw new Error("Unsafe setup backup directory: its .gitignore must contain only the '*' rule.");
@@ -148,8 +150,16 @@ export function planSetup(cwd: string, clients: AgentClient[]): SetupPlan {
 
 function atomicWrite(project: string, path: string, content: string) {
   safePath(project, path);
+  const guard = join(project, ".affitor/backups/.gitignore");
+  // The guard bootstrap contains only '*'. Every later temp is protected before
+  // merged config bytes reach disk, even if the process exits before finally.
+  if (path !== guard) {
+    const raw = readTarget(project, guard);
+    if (raw === null || !["*", "*\n", "*\r\n"].includes(raw)) throw new Error("Unsafe setup temporary directory guard.");
+  }
   mkdirSync(dirname(path), { recursive: true });
-  const temporary = `${path}.affitor-${randomUUID()}.tmp`;
+  const temporary = join(project, ".affitor/backups", `.temporary-${randomUUID()}.tmp`);
+  safePath(project, temporary);
   try {
     writeFileSync(temporary, content, { mode: 0o600, flag: "wx" });
     safePath(project, path);
@@ -200,6 +210,13 @@ export function applySetup(plan: SetupPlan, beforeWrite?: (action: FileAction) =
   }
 }
 
+function credentialWarnings(project: string): string[] {
+  const env = agentChildEnvironment(process.env, "");
+  delete env.AFFITOR_API_KEY;
+  const checked = spawnSync("git", ["-C", project, "ls-files", "--error-unmatch", "--", ".affitor/.env"], { env, encoding: "utf8", timeout: 1500, windowsHide: true });
+  return checked.status === 0 ? ["credential_tracked"] : [];
+}
+
 export function doctor(cwd: string, clients: AgentClient[]) {
   return clients.map(client => {
     try {
@@ -209,7 +226,7 @@ export function doctor(cwd: string, clients: AgentClient[]) {
         const stat = lstatSync(keyPath);
         return stat.isFile() && !stat.isSymbolicLink() ? readFileSync(keyPath, "utf8") : null;
       });
-      return { client, status: client === "codex" ? "manual" : plan.actions.some(a => a.operation === "create") ? "missing" : plan.actions.some(a => a.operation === "update") ? "stale" : "aligned", credential: credential ? "present_unverified" : "missing", liveSession: "not_checked", manual: plan.manual };
-    } catch { return { client, status: "invalid", credential: "not_checked", liveSession: "not_checked", manual: [] }; }
+      return { client, warnings: credentialWarnings(plan.project), notes: plan.notes, status: client === "codex" ? "manual" : plan.actions.some(a => a.operation === "create") ? "missing" : plan.actions.some(a => a.operation === "update") ? "stale" : "aligned", credential: credential ? "present_unverified" : "missing", liveSession: "not_checked", manual: plan.manual };
+    } catch { return { client, warnings: [], notes: [], status: "invalid", credential: "not_checked", liveSession: "not_checked", manual: [] }; }
   });
 }

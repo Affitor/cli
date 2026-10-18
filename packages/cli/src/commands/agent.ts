@@ -32,7 +32,7 @@ export function registerAgentCommands(program: Command) {
           project: plan.project, clients, caller: callerClient(process.env) ?? null,
           entry: plan.entry, mcpVersion: plan.mcpVersion,
           actions: plan.actions.map(({ path, operation, backup }) => ({ path, operation, backup })),
-          manual: plan.manual,
+          manual: plan.manual, notes: plan.notes,
         };
         let status = opts.dryRun ? "planned" : "needs_confirmation";
         if (!flags.json) process.stdout.write(JSON.stringify(preview, null, 2) + "\n");
@@ -69,8 +69,8 @@ export function registerAgentCommands(program: Command) {
         const clients = selectedClients(opts.client ?? [], process.env);
         const configured = CLIENTS.filter(client => client !== "codex" && existsSync(join(process.cwd(), client === "claude_code" ? ".mcp.json" : ".cursor/mcp.json")));
         const results = doctor(process.cwd(), clients.length ? clients : configured.length ? configured : ["claude_code", "cursor"]);
-        const healthy = results.every(result => result.status === "aligned" && result.credential === "present_unverified");
-        const result = { status: healthy ? "aligned" : "needs_attention", mode: "static", clients: results, next: "Restart the selected agent and call affitor_readiness. Static checks do not prove a live connection or integration readiness." };
+        const healthy = results.every(result => result.status === "aligned" && result.credential === "present_unverified" && result.warnings.length === 0);
+        const result = { status: healthy ? "aligned" : "needs_attention", mode: "static", clients: results, next: "Restart the selected agent and call affitor_readiness. A credential_tracked warning requires rotating the key and removing it from Git tracking/history through your repository process. Static checks do not prove a live connection or integration readiness." };
         if (getFlags(cmd).json) process.stdout.write(JSON.stringify(result) + "\n");
         else process.stdout.write(JSON.stringify(result, null, 2) + "\n");
         process.exitCode = healthy ? 0 : 1;
