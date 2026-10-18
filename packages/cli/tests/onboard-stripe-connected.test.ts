@@ -6,7 +6,32 @@ import { dirname, join } from "node:path";
 const confirmAction = vi.fn<(message: string) => Promise<boolean>>();
 vi.mock("../src/lib/prompts.js", () => ({ confirmAction: (m: string) => confirmAction(m) }));
 
-const { readStripeConnected, wireServerSale } = await import("../src/commands/onboard");
+// runOnboard's collaborators: the wizard (records what it was told) and the API (status as given).
+const wizardCalls: Array<Record<string, unknown>> = [];
+vi.mock("../src/lib/wizard.js", () => ({
+  runInstallWizard: async (opts: Record<string, unknown>) => {
+    wizardCalls.push(opts);
+  },
+}));
+const apiState: { status: unknown } = { status: {} };
+vi.mock("../src/lib/api-client.js", async (orig) => {
+  const real = await orig<typeof import("../src/lib/api-client")>();
+  class FakeAPI {
+    async getStatus() {
+      if (apiState.status instanceof Error) throw apiState.status;
+      return apiState.status;
+    }
+    async runVerificationChain() {
+      return {};
+    }
+    async getReadiness() {
+      return { integration_verified: true };
+    }
+  }
+  return { ...real, AffitorAPI: FakeAPI };
+});
+
+const { callsTrackSale, readStripeAccountBound, runOnboard, wireServerSale } = await import("../src/commands/onboard");
 
 /**
  * Report 2026-10-17 (onboard trackSale double count): with the program's Stripe connected,
@@ -63,19 +88,22 @@ function wire(cwd: string, over: Partial<Parameters<typeof wireServerSale>[0]> =
 
 beforeEach(() => {
   confirmAction.mockReset();
+  wizardCalls.length = 0;
+  apiState.status = {};
   vi.spyOn(console, "log").mockImplementation(() => {});
   vi.spyOn(console, "warn").mockImplementation(() => {});
   vi.spyOn(console, "error").mockImplementation(() => {});
 });
 afterEach(() => {
   vi.restoreAllMocks();
+  process.exitCode = undefined;
   while (dirs.length) rmSync(dirs.pop()!, { recursive: true, force: true });
 });
 
 describe("wireServerSale — Stripe connected in Affitor", () => {
   it("adds no trackSale and leaves the webhook unchanged, even with --yes", async () => {
     const dir = project();
-    const step = await wire(dir, { stripeConnected: true });
+    const step = await wire(dir, { stripeAccountBound: true });
     expect(step).toMatchObject({ step: "server_sale", status: "skipped" });
     expect(step.detail).toContain("stripe connected");
     expect(webhookOf(dir)).toBe(WEBHOOK);
@@ -85,7 +113,7 @@ describe("wireServerSale — Stripe connected in Affitor", () => {
   it("points out a webhook that already calls trackSale (it counts each payment twice)", async () => {
     const wired = WEBHOOK.replace("await fulfill(session);", "await affitor.trackSale({ customerExternalId: 'u', amount: 1, invoiceId: session.id });");
     const dir = project(wired);
-    const step = await wire(dir, { stripeConnected: true });
+    const step = await wire(dir, { stripeAccountBound: true });
     expect(step.status).toBe("skipped");
     expect(step.detail).toContain("already calls trackSale");
     expect(webhookOf(dir)).toBe(wired);
@@ -95,7 +123,7 @@ describe("wireServerSale — Stripe connected in Affitor", () => {
 describe("wireServerSale — Stripe not connected", () => {
   it("adds the sale call as before (--yes)", async () => {
     const dir = project();
-    const step = await wire(dir, { stripeConnected: false });
+    const step = await wire(dir, { stripeAccountBound: false });
     expect(step).toMatchObject({ status: "ok", detail: HOOK_FILE });
     expect(webhookOf(dir)).toContain("await affitor.trackSale({");
   });
@@ -104,7 +132,7 @@ describe("wireServerSale — Stripe not connected", () => {
 describe("wireServerSale — connection unknown", () => {
   it("with --yes (nobody to ask): webhook unchanged, reported as manual", async () => {
     const dir = project();
-    const step = await wire(dir, { stripeConnected: undefined });
+    const step = await wire(dir, { stripeAccountBound: undefined });
     expect(step.status).toBe("manual");
     expect(step.detail).toContain("unknown");
     expect(webhookOf(dir)).toBe(WEBHOOK);
@@ -113,7 +141,7 @@ describe("wireServerSale — connection unknown", () => {
 
   it("in --json mode: webhook unchanged, nobody asked", async () => {
     const dir = project();
-    const step = await wire(dir, { stripeConnected: undefined, json: true, autoConfirm: false, interactive: true });
+    const step = await wire(dir, { stripeAccountBound: undefined, json: true, autoConfirm: false, interactive: true });
     expect(step.status).toBe("manual");
     expect(webhookOf(dir)).toBe(WEBHOOK);
     expect(confirmAction).not.toHaveBeenCalled();
@@ -122,7 +150,7 @@ describe("wireServerSale — connection unknown", () => {
   it("interactive, answer yes (connected): no trackSale added", async () => {
     const dir = project();
     confirmAction.mockResolvedValueOnce(true);
-    const step = await wire(dir, { stripeConnected: undefined, interactive: true, autoConfirm: false });
+    const step = await wire(dir, { stripeAccountBound: undefined, interactive: true, autoConfirm: false });
     expect(confirmAction).toHaveBeenCalledTimes(1);
     expect(confirmAction.mock.calls[0][0]).toContain("Is Stripe connected");
     expect(step.status).toBe("skipped");
@@ -132,27 +160,109 @@ describe("wireServerSale — connection unknown", () => {
   it("interactive, answer no: shows the diff and adds the call once confirmed", async () => {
     const dir = project();
     confirmAction.mockResolvedValueOnce(false).mockResolvedValueOnce(true);
-    const step = await wire(dir, { stripeConnected: undefined, interactive: true, autoConfirm: false });
+    const step = await wire(dir, { stripeAccountBound: undefined, interactive: true, autoConfirm: false });
     expect(confirmAction).toHaveBeenCalledTimes(2);
     expect(step.status).toBe("ok");
     expect(webhookOf(dir)).toContain("await affitor.trackSale({");
   });
 });
 
-describe("readStripeConnected", () => {
-  it("reads stripe_connected from GET /v1/cli/status", async () => {
-    expect(await readStripeConnected({ getStatus: async () => ({ stripe_connected: true }) as never })).toBe(true);
-    expect(await readStripeConnected({ getStatus: async () => ({ stripe_connected: false }) as never })).toBe(false);
+describe("readStripeAccountBound", () => {
+  const api = (status: unknown) => ({ getStatus: async () => status as never });
+
+  it("reads stripe_account_bound from GET /v1/cli/status", async () => {
+    expect(await readStripeAccountBound(api({ stripe_account_bound: true, stripe_connected: false }))).toBe(true);
+    expect(await readStripeAccountBound(api({ stripe_account_bound: false }))).toBe(false);
   });
 
-  it("is undefined when the call fails or the field is missing (the caller asks)", async () => {
+  it("an older CMS that only sends stripe_connected is unknown, never trusted (it meant Server API mode once)", async () => {
+    expect(await readStripeAccountBound(api({ stripe_connected: true }))).toBeUndefined();
+    expect(await readStripeAccountBound(api({ stripe_connected: false }))).toBeUndefined();
+  });
+
+  it("is undefined when the call fails", async () => {
     expect(
-      await readStripeConnected({
+      await readStripeAccountBound({
         getStatus: async () => {
           throw new Error("network");
         },
       }),
     ).toBeUndefined();
-    expect(await readStripeConnected({ getStatus: async () => ({}) as never })).toBeUndefined();
+  });
+});
+
+describe("callsTrackSale", () => {
+  it("finds a real call, not a comment", () => {
+    expect(callsTrackSale("await affitor.trackSale({ invoiceId })")).toBe(true);
+    expect(callsTrackSale("// trackSale is documented elsewhere")).toBe(false);
+    expect(callsTrackSale("  // await affitor.trackSale({})")).toBe(false);
+    expect(callsTrackSale(" * see trackSale(input)")).toBe(false);
+  });
+
+  it("a comment mentioning trackSale is not reported as a double count", async () => {
+    const commented = WEBHOOK.replace("await fulfill(session);", "// trackSale is documented elsewhere\n      await fulfill(session);");
+    const dir = project(commented);
+    const step = await wire(dir, { stripeAccountBound: true });
+    expect(step.detail).not.toContain("already calls trackSale");
+  });
+});
+
+const FLAGS = { json: false, noInteractive: false, autoConfirm: false, quiet: false, verbose: false, apiUrl: "http://test.local" };
+
+/** A Fastify + Stripe app the detectors recognise, with the webhook above. */
+function app(env?: string): string {
+  const dir = project();
+  writeFileSync(join(dir, "package.json"), JSON.stringify({ dependencies: { fastify: "^4.0.0", stripe: "^14.0.0" } }));
+  if (env !== undefined) writeFileSync(join(dir, ".env"), env);
+  return dir;
+}
+
+async function onboardIn(dir: string, opts: Record<string, unknown> = {}) {
+  const cwd = process.cwd();
+  process.chdir(dir);
+  try {
+    await runOnboard({ apiKey: "key_a", yes: true, ...opts }, FLAGS);
+  } finally {
+    process.chdir(cwd);
+  }
+}
+
+describe("runOnboard reads the binding and passes it on", () => {
+  it("bound: webhook unchanged, and the wizard is told sales come from Stripe", async () => {
+    apiState.status = { stripe_account_bound: true, stripe_connected: false };
+    const dir = app();
+    await onboardIn(dir);
+    expect(webhookOf(dir)).toBe(WEBHOOK);
+    expect(wizardCalls[0]).toMatchObject({ stripeRecordsSales: true });
+  });
+
+  it("not bound: the sale call is added (--yes)", async () => {
+    apiState.status = { stripe_account_bound: false };
+    const dir = app();
+    await onboardIn(dir);
+    expect(webhookOf(dir)).toContain("await affitor.trackSale({");
+    expect(wizardCalls[0]).toMatchObject({ stripeRecordsSales: false });
+  });
+
+  it("an older CMS (stripe_connected only): unknown, so --yes leaves the webhook alone", async () => {
+    apiState.status = { stripe_connected: true };
+    const dir = app();
+    await onboardIn(dir);
+    expect(webhookOf(dir)).toBe(WEBHOOK);
+  });
+
+  it("the env file holds another program's key: the answer is not trusted, webhook unchanged", async () => {
+    apiState.status = { stripe_account_bound: false };
+    const dir = app("AFFITOR_API_KEY=key_b\n");
+    await onboardIn(dir);
+    expect(webhookOf(dir)).toBe(WEBHOOK);
+    expect(readFileSync(join(dir, ".env"), "utf8")).toBe("AFFITOR_API_KEY=key_b\n");
+  });
+
+  it("the env file holds the same key: the answer is used", async () => {
+    apiState.status = { stripe_account_bound: false };
+    const dir = app("AFFITOR_API_KEY=key_a\n");
+    await onboardIn(dir);
+    expect(webhookOf(dir)).toContain("await affitor.trackSale({");
   });
 });

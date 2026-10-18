@@ -96,11 +96,15 @@ export async function runOnboard(opts: OnboardOpts, flags: CLIFlags) {
     ]);
   }
 
+  // Does Affitor already record this program's Stripe payments (Connect)? Read once, before the
+  // wizard, so neither the wizard nor the sale step advises a second, double-counting trackSale.
+  const stripeAccountBound = provider === "stripe" ? await stripeBindingFor(api, cwd, apiKey, flags.json) : undefined;
+
   // ── (c) Browser tracking — reuse init's wizard (install @affitor/sdk +
   // inject <AffitorTracker/> via diff-preview+confirm + scaffold lib/affitor.ts).
   // Skipped in --json mode (the wizard is interactive/printed output). ──
   if (!flags.json) {
-    await runInstallWizard({ cwd, programId: "", apiUrl, autoConfirm });
+    await runInstallWizard({ cwd, programId: "", apiUrl, autoConfirm, stripeRecordsSales: stripeAccountBound === true });
     steps.push({ step: "browser_tracking", status: "ok", detail: "via install wizard" });
   } else {
     steps.push({ step: "browser_tracking", status: "skipped", detail: "json mode" });
@@ -114,7 +118,7 @@ export async function runOnboard(opts: OnboardOpts, flags: CLIFlags) {
     interactive,
     autoConfirm,
     json: flags.json,
-    stripeConnected: provider === "stripe" ? await readStripeConnected(api) : undefined,
+    stripeAccountBound,
   });
   steps.push(saleStep);
 
@@ -167,22 +171,55 @@ interface WireSaleArgs {
   interactive: boolean;
   autoConfirm: boolean;
   json: boolean;
-  /** The program's Stripe connection in Affitor; undefined when it could not be read. */
-  stripeConnected?: boolean;
+  /** A Stripe account is bound to the program in Affitor; undefined when it could not be read. */
+  stripeAccountBound?: boolean;
 }
 
 /**
- * Is this program's Stripe connected in Affitor? `GET /v1/cli/status` answers it per program
- * (`stripe_connected`, the same check as the dashboard's Payments card). undefined when the
- * call fails or the field is missing, so the caller asks instead of guessing.
+ * Does Affitor record this program's Stripe payments through Connect? Connect credits a sale when
+ * the program is bound to the event's Stripe account, whatever the connection status says
+ * (pending_verification still records), so `GET /v1/cli/status` answers with
+ * `stripe_account_bound`. Not `stripe_connected`: it is false while pending, and before CMS
+ * v3.16.91 it was true for any Server API program. undefined when the call fails or the field
+ * is missing, so the caller asks instead of guessing.
  */
-export async function readStripeConnected(api: Pick<AffitorAPI, "getStatus">): Promise<boolean | undefined> {
+export async function readStripeAccountBound(api: Pick<AffitorAPI, "getStatus">): Promise<boolean | undefined> {
   try {
     const status = await api.getStatus();
-    return typeof status?.stripe_connected === "boolean" ? status.stripe_connected : undefined;
+    return typeof status?.stripe_account_bound === "boolean" ? status.stripe_account_bound : undefined;
   } catch {
     return undefined;
   }
+}
+
+/** The env file onboard writes the key to (.env.local for Next, else .env) and the key already there. */
+export function envApiKey(cwd: string): { envName: string; value?: string } {
+  const envName = existsSync(join(cwd, ".env.local")) ? ".env.local" : ".env";
+  const envPath = join(cwd, envName);
+  if (!existsSync(envPath)) return { envName };
+  const m = readFileSync(envPath, "utf8").match(/^AFFITOR_API_KEY=(.*)$/m);
+  return { envName, value: m ? m[1].trim() : undefined };
+}
+
+/**
+ * The binding for the program whose key the app will run with. The status call answers for the
+ * key passed to onboard; when the env file already holds a different key, the webhook runs as that
+ * other program, so the answer does not apply: unknown.
+ */
+async function stripeBindingFor(
+  api: Pick<AffitorAPI, "getStatus">,
+  cwd: string,
+  apiKey: string,
+  json: boolean,
+): Promise<boolean | undefined> {
+  const env = envApiKey(cwd);
+  if (env.value && env.value !== apiKey) {
+    if (!json) {
+      logger.warn(`${env.envName} holds a different AFFITOR_API_KEY, so this key's Stripe status may not be the one your app runs with.`);
+    }
+    return undefined;
+  }
+  return readStripeAccountBound(api);
 }
 
 /**
@@ -217,7 +254,7 @@ export async function wireServerSale(args: WireSaleArgs): Promise<OnboardStep> {
   // webhook would record the same payment a second time (a subscription's first payment as two
   // sales). Never add one then; when the connection is unknown, ask, and without a person to
   // ask, change nothing.
-  let connected = args.stripeConnected;
+  let connected = args.stripeAccountBound;
   if (connected === undefined && interactive && !autoConfirm && !json) {
     connected = await confirmAction(
       "Is Stripe connected for this program in Affitor (Program settings › Payments)?",
@@ -302,6 +339,11 @@ export async function wireServerSale(args: WireSaleArgs): Promise<OnboardStep> {
   return { step: "server_sale", status: "ok", detail: hook.file };
 }
 
+/** A trackSale call on a line that is not a comment. */
+export function callsTrackSale(source: string): boolean {
+  return source.split("\n").some((line) => /\btrackSale\s*\(/.test(line) && !/^\s*(\/\/|\/\*|\*)/.test(line));
+}
+
 /**
  * Stripe connected (or unknown with no one to ask): print the Connect recipe (checkout metadata
  * only) and leave the webhook alone. A webhook that already calls trackSale is pointed out,
@@ -320,7 +362,7 @@ function skipSaleForConnect(args: {
   let tracksSale = false;
   if (hook) {
     try {
-      tracksSale = readFileSync(join(cwd, hook.file), "utf8").includes("trackSale");
+      tracksSale = callsTrackSale(readFileSync(join(cwd, hook.file), "utf8"));
     } catch {
       /* unreadable: nothing to point out */
     }
@@ -332,7 +374,9 @@ function skipSaleForConnect(args: {
     }
     if (tracksSale) {
       logger.warn(
-        `${hook!.file} calls trackSale. With Stripe connected, Affitor already records each payment, so remove that call or every sale counts twice.`,
+        unknown
+          ? `${hook!.file} calls trackSale. If Stripe is connected in Affitor, remove that call: Affitor already records each payment, so every sale would count twice.`
+          : `${hook!.file} calls trackSale. With Stripe connected, Affitor already records each payment, so remove that call or every sale counts twice.`,
       );
     }
     if (unknown) {

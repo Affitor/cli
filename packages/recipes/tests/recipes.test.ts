@@ -163,9 +163,16 @@ describe("snippets never throw inside the brand's webhook (report 2026-10-17 #5)
     const calls: Array<Record<string, unknown>> = [];
     return {
       calls,
+      // The SDK's three synchronous checks (affiliate-sdk src/server.ts trackSale).
       trackSale(input: Record<string, unknown>) {
         if (!input.customerExternalId && !input.clickId) {
           throw new Error("Affitor.trackSale: `customerExternalId` or `clickId` is required");
+        }
+        if (!Number.isInteger(input.amount) || (input.amount as number) <= 0) {
+          throw new Error("Affitor.trackSale: `amount` must be a positive integer (cents)");
+        }
+        if (!input.invoiceId) {
+          throw new Error("Affitor.trackSale: `invoiceId` is required (idempotency key)");
         }
         calls.push(input);
         return Promise.resolve({ ok: true, status: 200 });
@@ -239,9 +246,13 @@ describe("snippets never throw inside the brand's webhook (report 2026-10-17 #5)
     ]);
   });
 
-  it("Paddle without custom_data.user_id: sends nothing, does not throw", async () => {
+  it("Paddle without custom_data.user_id, or with a $0 total: sends nothing, does not throw", async () => {
     const r = await runSale("paddle", { data: { id: "txn_1", details: { totals: { total: "1000" } } } });
     expect(r.calls).toEqual([]);
+    const zero = await runSale("paddle", {
+      data: { id: "txn_0", custom_data: { user_id: "u_4" }, details: { totals: { total: "0" } } },
+    });
+    expect(zero.calls).toEqual([]);
     const ok = await runSale("paddle", {
       data: { id: "txn_2", custom_data: { user_id: "u_4" }, details: { totals: { total: "1000" } } },
     });

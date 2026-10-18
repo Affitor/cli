@@ -67,6 +67,8 @@ export interface ProgramStatus {
   dns_verified: boolean;
   stripe_connected: boolean;
   stripe_charges_enabled?: boolean;
+  /** A Stripe account is bound to the program, so Affitor records its payments through Connect (affiliate-cms#539). */
+  stripe_account_bound?: boolean;
   recent_events: {
     clicks_24h: number;
     leads_24h: number;
