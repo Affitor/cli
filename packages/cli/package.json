@@ -1,10 +1,10 @@
 {
   "name": "affitor",
   "version": "0.4.6",
-  "description": "CLI-native affiliate tracking. Connect Stripe, track commissions, manage partners \u2014 all from your terminal.",
+  "description": "CLI-native affiliate tracking. Connect Stripe, track commissions, manage partners — all from your terminal.",
   "type": "module",
   "bin": {
-    "affitor": "./dist/cli.js"
+    "affitor": "dist/cli.js"
   },
   "scripts": {
     "build": "tsc",
@@ -30,7 +30,7 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/Affitor/cli"
+    "url": "git+https://github.com/Affitor/cli.git"
   },
   "homepage": "https://affitor.com",
   "engines": {
