@@ -52,10 +52,10 @@ describe("injectStripeTrackSale — injected (clean shape)", () => {
     expect(saleIdx).toBeLessThan(fulfillIdx);
 
     // The sale snippet is wrapped in a `$0/null` guard (M1): the `if` lands at the
-    // session binding's indentation (6 spaces); the guarded trackSale sits one
-    // level deeper (8 spaces).
+    // session binding's indentation (6 spaces); the trackSale sits inside it and
+    // inside the has-a-key check (10 spaces).
     expect(r.content).toMatch(/\n {6}if \(session\.amount_total && session\.amount_total > 0\) \{/);
-    expect(r.content).toMatch(/\n {8}await affitor\.trackSale\(\{/);
+    expect(r.content).toMatch(/\n {10}await affitor\.trackSale\(\{/);
   });
 
   it("reads the customer key the metadata step writes (B1: affitor_customer_key, not client_reference_id)", () => {
@@ -65,8 +65,9 @@ describe("injectStripeTrackSale — injected (clean shape)", () => {
     const r = injectStripeTrackSale(CLEAN_FASTIFY, { saleSnippet: SALE_SNIPPET });
     expect(r.status).toBe("injected");
     expect(r.content).toContain(
-      "customerExternalId: session.metadata?.affitor_customer_key ?? session.client_reference_id",
+      "const affitorKey = session.metadata?.affitor_customer_key ?? session.client_reference_id;",
     );
+    expect(r.content).toContain("customerExternalId: affitorKey,");
     // It must NOT read client_reference_id alone (the old, broken contract).
     expect(r.content).not.toMatch(/customerExternalId:\s*session\.client_reference_id,/);
   });
@@ -103,9 +104,9 @@ describe("injectStripeTrackSale — injected (clean shape)", () => {
   it("respects an explicit indent override", () => {
     const r = injectStripeTrackSale(CLEAN_FASTIFY, { saleSnippet: SALE_SNIPPET, indent: "" });
     expect(r.status).toBe("injected");
-    // indent "" → the guard `if` sits at column 0; the guarded trackSale at 2 spaces.
+    // indent "" → the guard `if` sits at column 0; the trackSale inside both checks at 4 spaces.
     expect(r.content).toMatch(/\nif \(session\.amount_total && session\.amount_total > 0\) \{/);
-    expect(r.content).toMatch(/\n {2}await affitor\.trackSale\(\{/);
+    expect(r.content).toMatch(/\n {4}await affitor\.trackSale\(\{/);
   });
 });
 

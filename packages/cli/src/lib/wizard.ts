@@ -24,6 +24,8 @@ export interface WizardOptions {
   programId: string | number;
   apiUrl: string;
   autoConfirm: boolean;
+  /** true: bound now; unknown: onboarding cannot rule out Connect. Both suppress sale advice. */
+  stripeRecordsSales?: true | "unknown";
 }
 
 function rel(cwd: string, p: string): string {
@@ -145,6 +147,10 @@ async function setupServerTracking(
   // If they already verify Stripe webhooks somewhere, point at the exact site
   // (the trackSale call belongs right after constructEvent). Best-effort hint —
   // we still print the full snippets below as the canonical reference.
+  if (provider === "stripe" && opts.stripeRecordsSales) {
+    printServerSnippets(serverTrackingSnippets(provider), { salesFromStripe: opts.stripeRecordsSales });
+    return;
+  }
   if (provider === "stripe") {
     const hook = detectStripeWebhook(opts.cwd, framework);
     if (hook) {
@@ -160,9 +166,17 @@ async function setupServerTracking(
   printServerSnippets(serverTrackingSnippets(provider));
 }
 
-function printServerSnippets(s: TrackingSnippets): void {
+function printServerSnippets(s: TrackingSnippets, opts: { salesFromStripe?: true | "unknown" } = {}): void {
   const lines: string[] = ["", `  ${format.dim("1) At signup — bind the customer (server-side):")}`];
   for (const l of s.lead.split("\n")) lines.push(`  ${format.cyan(l)}`);
+  if (opts.salesFromStripe) {
+    const advice = opts.salesFromStripe === true
+      ? "2) Stripe is bound in Affitor. Do not add a second trackSale path; it can count a payment twice."
+      : "2) Stripe sale tracking needs review. Check current, shared-account and delayed Connect events before adding trackSale.";
+    lines.push("", `  ${format.dim(advice)}`, "");
+    logger.titledBox("Track conversions (add to your backend)", lines);
+    return;
+  }
   lines.push("", `  ${format.dim(`2) At purchase — ${s.saleContext}:`)}`);
   for (const l of s.sale.split("\n")) lines.push(`  ${format.cyan(l)}`);
   lines.push("", `  ${format.dim("3) On refund — reverse the commission:")}`);
