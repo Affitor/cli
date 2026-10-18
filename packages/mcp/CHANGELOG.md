@@ -1,5 +1,9 @@
 # Changelog — @affitor/mcp
 
+## 0.2.3 (registry 0.2.4)
+- Tool and input descriptions rewritten: each tool says when to use it and what it returns; each input says what it means, where the value comes from, an example and what leaving it out does. No change to tools, schemas or behaviour.
+- A full refund leaves `refundAmountCents` out; sending 0 is refused for newer sales.
+
 ## Registry 0.2.3 (server.json only; the npm package stays 0.2.2)
 - The registry entry `com.affitor/mcp` adds the hosted server as a remote: `https://mcp.affitor.com/mcp` (streamable HTTP, sign in with your Affitor account, read-only). Description and website point at the MCP docs.
 
