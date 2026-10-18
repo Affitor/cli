@@ -200,18 +200,28 @@ export async function readStripeAccountBound(api: Pick<AffitorAPI, "getStatus">)
   }
 }
 
-/** The env file onboard writes the key to (.env.local for Next, else .env) and the key already there. */
-export function envApiKey(cwd: string): { envName: string; value?: string; ambiguous?: boolean } {
+/**
+ * Inspect every standard runtime mode instead of guessing the deployment's NODE_ENV.
+ * Next's mode-local layer precedes .env.local; test skips .env.local entirely.
+ * Requiring all declared keys to agree is deliberately stricter than any one loader.
+ */
+export function envApiKey(cwd: string, expectedKey: string): { envName: string; value?: string; ambiguous?: boolean; conflict: boolean } {
   const envName = existsSync(join(cwd, ".env.local")) ? ".env.local" : ".env";
-  const envPath = join(cwd, envName);
-  if (!existsSync(envPath)) return { envName };
-  const assignments = readFileSync(envPath, "utf8").split(/\r?\n/)
-    .filter(line => /^\s*(?:export\s+)?AFFITOR_API_KEY\s*=/.test(line));
-  // Frameworks and dotenv loaders differ on precedence. Never choose one assignment
-  // on the application's behalf, even when duplicate values happen to match today.
-  if (assignments.length > 1) return { envName, ambiguous: true };
-  const value = assignments[0]?.replace(/^\s*(?:export\s+)?AFFITOR_API_KEY\s*=\s*/, "").trim();
-  return { envName, value };
+  const names = [".env", ".env.local", ...["production", "development", "test"].flatMap(mode => [`.env.${mode}`, `.env.${mode}.local`])];
+  const layers = names.map(name => {
+    const path = join(cwd, name);
+    const assignments = existsSync(path) ? readFileSync(path, "utf8").split(/\r?\n/)
+      .filter(line => /^\s*(?:export\s+)?AFFITOR_API_KEY\s*=/.test(line)) : [];
+    let value = assignments[0]?.replace(/^\s*(?:export\s+)?AFFITOR_API_KEY\s*=\s*/, "").trim();
+    if (value && ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'")))) value = value.slice(1, -1);
+    return { name, value, ambiguous: assignments.length > 1 };
+  });
+  const target = layers.find(layer => layer.name === envName)!;
+  return {
+    envName, value: target.value, ambiguous: target.ambiguous,
+    conflict: (process.env.AFFITOR_API_KEY !== undefined && process.env.AFFITOR_API_KEY !== expectedKey)
+      || layers.some(layer => layer.ambiguous || (layer.value !== undefined && layer.value !== expectedKey)),
+  };
 }
 
 /**
@@ -225,11 +235,10 @@ async function stripeBindingFor(
   apiKey: string,
   json: boolean,
 ): Promise<{ bound: true | undefined; keyMismatch: boolean }> {
-  const env = envApiKey(cwd);
-  const processKey = process.env.AFFITOR_API_KEY;
-  if (env.ambiguous || (env.value !== undefined && env.value !== apiKey) || (processKey && processKey !== apiKey)) {
+  const env = envApiKey(cwd, apiKey);
+  if (env.conflict) {
     if (!json) {
-      logger.warn(`The existing AFFITOR_API_KEY in the environment or ${env.envName} may differ from this key. Resolve that conflict before adding sale tracking.`);
+      logger.warn(`AFFITOR_API_KEY assignments in process.env or the project env layers conflict with this key. Resolve them for every runtime mode before adding sale tracking.`);
     }
     return { bound: undefined, keyMismatch: true };
   }
@@ -411,6 +420,7 @@ export function callsTrackSale(source: string): boolean {
         while (i < source.length && /[\w$]/.test(source[i])) i++;
         previous = source.slice(start, i); continue;
       }
+      if (source.startsWith("=>", i)) { previous = "=>"; i += 2; continue; }
       if (c === "(" && previous === "trackSale") found = true;
       if (c === "{") depth++;
       if (c === "}") { if (interpolation && depth === 0) { i++; return; } depth--; }
@@ -531,17 +541,17 @@ function writeApiKeyToEnv(
   apiKey: string,
   opts: { autoConfirm: boolean; json: boolean },
 ): OnboardStep {
-  const { envName, value: existingValue, ambiguous } = envApiKey(cwd);
+  const { envName, value: existingValue, conflict } = envApiKey(cwd, apiKey);
   const envPath = join(cwd, envName);
   const line = `AFFITOR_API_KEY=${apiKey}`;
 
+  if (conflict) {
+    if (!opts.json) logger.warn("Project env layers have conflicting or duplicate AFFITOR_API_KEY assignments — resolve them manually. Nothing was changed.");
+    return { step: "env_key", status: "manual", detail: "env layer conflict: existing assignments kept" };
+  }
   let content = "";
   if (existsSync(envPath)) {
     content = readFileSync(envPath, "utf8");
-    if (ambiguous) {
-      if (!opts.json) logger.warn(`${envName} has multiple AFFITOR_API_KEY assignments — resolve them manually. Nothing was changed.`);
-      return { step: "env_key", status: "manual", detail: `${envName}: duplicate assignments kept` };
-    }
     if (existingValue !== undefined) {
       if (existingValue === apiKey) {
         if (!opts.json) logger.step(`${envName} already has AFFITOR_API_KEY — skipped`);

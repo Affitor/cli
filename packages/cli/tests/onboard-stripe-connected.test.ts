@@ -208,6 +208,7 @@ describe("callsTrackSale", () => {
     "const example = 'trackSale({})';",
     'const example = `trackSale({})`;',
     'const example = /trackSale(foo)/;',
+    'const example = () => /trackSale(foo)/;',
     'const example = `escaped \\` trackSale({})`;',
   ])("ignores comment/string examples: %s", async source => {
     expect(callsTrackSale(source)).toBe(false);
@@ -257,6 +258,25 @@ describe("runOnboard reads the binding and passes it on", () => {
     await onboardIn(dir);
     expect(webhookOf(dir)).toBe(WEBHOOK);
     expect(wizardCalls[0]).toMatchObject({ stripeRecordsSales: true });
+  });
+
+  it('connected interactive run does not ask a Connect or injection question', async () => {
+    apiState.status = { stripe_account_bound: true, stripe_connected: false };
+    const dir = app();
+    confirmAction.mockResolvedValueOnce(false).mockResolvedValueOnce(true);
+    await onboardIn(dir, { yes: false });
+    expect(confirmAction).not.toHaveBeenCalled();
+    expect(webhookOf(dir)).toBe(WEBHOOK);
+    expect(wizardCalls[0].stripeRecordsSales).toBe(true);
+  });
+
+  it('connected JSON run reports skipped, rather than unknown/manual', async () => {
+    apiState.status = { stripe_account_bound: true };
+    const dir = app();
+    await onboardIn(dir, { yes: false }, { json: true });
+    const summary = JSON.parse(vi.mocked(console.log).mock.calls.at(-1)![0]);
+    expect(summary.steps).toContainEqual(expect.objectContaining({ step: 'server_sale', status: 'skipped' }));
+    expect(confirmAction).not.toHaveBeenCalled();
   });
 
   it("not bound: --yes leaves the webhook alone and the wizard gets unknown", async () => {
@@ -349,8 +369,52 @@ describe("runOnboard reads the binding and passes it on", () => {
     expect(output).toContain('same id you passed to trackSale');
   });
 
-  it('a runtime process key conflict cannot be overridden by answering the Connect question', async () => {
-    vi.stubEnv('AFFITOR_API_KEY', 'key_b');
+  it.each(['production', 'development', 'test'])('mode-specific %s override forces manual through runOnboard', async mode => {
+    const dir = app();
+    writeFileSync(join(dir, 'package.json'), JSON.stringify({ dependencies: { next: '^15.0.0', stripe: '^14.0.0' } }));
+    const local = 'AFFITOR_API_KEY=key_a\n';
+    const override = 'AFFITOR_API_KEY=key_b\n';
+    writeFileSync(join(dir, '.env.local'), local);
+    writeFileSync(join(dir, `.env.${mode}.local`), override);
+    apiState.status = { stripe_account_bound: true };
+    await onboardIn(dir, { yes: false }, { json: true });
+    const summary = JSON.parse(vi.mocked(console.log).mock.calls.at(-1)![0]);
+    expect(summary.steps).toContainEqual(expect.objectContaining({ step: 'server_sale', status: 'manual' }));
+    expect(summary.steps).toContainEqual(expect.objectContaining({ step: 'env_key', status: 'manual' }));
+    expect(webhookOf(dir)).toBe(WEBHOOK);
+    expect(readFileSync(join(dir, '.env.local'), 'utf8')).toBe(local);
+    expect(readFileSync(join(dir, `.env.${mode}.local`), 'utf8')).toBe(override);
+    expect(confirmAction).not.toHaveBeenCalled();
+  });
+
+  it.each(['.env', '.env.local', '.env.production', '.env.production.local', '.env.development', '.env.development.local', '.env.test', '.env.test.local'])("all standard layers are checked interactively: %s", async layer => {
+    const dir = app();
+    const env = 'AFFITOR_API_KEY=key_b\n';
+    writeFileSync(join(dir, layer), env);
+    apiState.status = { stripe_account_bound: true };
+    confirmAction.mockResolvedValueOnce(false).mockResolvedValueOnce(true);
+    await onboardIn(dir, { yes: false });
+    expect(wizardCalls[0].stripeRecordsSales).toBe('unknown');
+    expect(confirmAction).not.toHaveBeenCalled();
+    expect(webhookOf(dir)).toBe(WEBHOOK);
+    expect(readFileSync(join(dir, layer), 'utf8')).toBe(env);
+    const output = vi.mocked(console.log).mock.calls.flat().join('\n');
+    expect(output).toContain('env layers');
+  });
+
+  it('matching quoted values across mode layers still use the checked binding', async () => {
+    const dir = app();
+    writeFileSync(join(dir, '.env.local'), 'AFFITOR_API_KEY="key_a"\n');
+    writeFileSync(join(dir, '.env.production.local'), "export AFFITOR_API_KEY='key_a'\n");
+    apiState.status = { stripe_account_bound: true };
+    await onboardIn(dir, { yes: false }, { json: true });
+    const summary = JSON.parse(vi.mocked(console.log).mock.calls.at(-1)![0]);
+    expect(summary.steps).toContainEqual(expect.objectContaining({ step: 'server_sale', status: 'skipped' }));
+    expect(summary.steps).toContainEqual(expect.objectContaining({ step: 'env_key', status: 'already' }));
+  });
+
+  it.each(['key_b', ''])('a runtime process key conflict (%j) cannot be overridden by answering the Connect question', async processKey => {
+    vi.stubEnv('AFFITOR_API_KEY', processKey);
     apiState.status = { stripe_account_bound: false };
     const dir = app();
     confirmAction.mockResolvedValueOnce(false).mockResolvedValueOnce(true);
