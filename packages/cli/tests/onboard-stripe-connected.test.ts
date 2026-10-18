@@ -291,7 +291,7 @@ describe("runOnboard reads the binding and passes it on", () => {
   it.each(['AFFITOR_API_KEY=key_b\n', 'export AFFITOR_API_KEY = key_b\n'])('key mismatch stays manual even interactively (%s)', async (env) => {
     apiState.status = { stripe_account_bound: false };
     const dir = app(env);
-    confirmAction.mockResolvedValue(false);
+    confirmAction.mockResolvedValueOnce(false).mockResolvedValueOnce(true);
     await onboardIn(dir, { yes: false });
     expect(webhookOf(dir)).toBe(WEBHOOK);
     expect(readFileSync(join(dir, '.env'), 'utf8')).toBe(env);
@@ -302,7 +302,7 @@ describe("runOnboard reads the binding and passes it on", () => {
     vi.stubEnv('AFFITOR_API_KEY', 'key_b');
     apiState.status = { stripe_account_bound: false };
     const dir = app();
-    confirmAction.mockResolvedValue(false);
+    confirmAction.mockResolvedValueOnce(false).mockResolvedValueOnce(true);
     await onboardIn(dir, { yes: false });
     expect(webhookOf(dir)).toBe(WEBHOOK);
     expect(confirmAction).not.toHaveBeenCalled();
