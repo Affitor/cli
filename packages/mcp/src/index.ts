@@ -268,7 +268,7 @@ export function registerTools(
         existingClickId: z
           .string()
           .optional()
-          .describe("The visitor's current affitor_click_id, so a repeat visit keeps the same click id. Leave it out to get a new one; an id from another program is never reused."),
+          .describe("The visitor's current affitor_click_id, so a repeat visit keeps the same click id. Send only an id that this program's tracker set. Leave it out to get a new one."),
       },
       annotations: { title: 'Report a click', readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
     },
@@ -403,7 +403,7 @@ function registerWriteTools(server: McpServer, affitor: AffitorLike, trackTestSa
           .int()
           .nonnegative()
           .optional()
-          .describe("This refund's amount, in the sale currency's smallest unit, such as 1500 for $15.00; it adds to earlier refunds on the sale, up to the sale amount. Leave it out (or send 0) to refund everything left, which reverses the commission."),
+          .describe("This refund's amount, in the sale currency's smallest unit, such as 1500 for $15.00; it adds to earlier refunds on the sale, up to the sale amount. Leave it out to refund everything left, which reverses the commission; never send 0."),
         refundReason: z.string().optional().describe('Why the customer was refunded, in your words, stored with the refund. Leave it out to record no reason.'),
         testMode: z
           .boolean()
