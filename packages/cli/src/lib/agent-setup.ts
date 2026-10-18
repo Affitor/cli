@@ -2,7 +2,7 @@ import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, renameSyn
 import { dirname, join, relative, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
 import { spawnSync } from "node:child_process";
-import { AGENT_LAUNCHER, AGENT_SKILL, MCP_VERSION, parseProgramCredential, agentChildEnvironment } from "./agent-launcher.js";
+import { AGENT_LAUNCHER, AGENT_SKILL, MCP_VERSION, parseProgramCredential, agentChildEnvironment, parseStoredAgentCredential, type StoredAgentCredential } from "./agent-launcher.js";
 
 export const CLIENTS = ["claude_code", "cursor", "codex"] as const;
 export type AgentClient = typeof CLIENTS[number];
@@ -22,6 +22,7 @@ export interface SetupPlan {
   actions: FileAction[];
   manual: string[];
   notes: string[];
+  agentKeys?: { client: AgentClient; path: string; id?: number; state: "pending" | "reused" | "minted" }[];
 }
 const snapshots = new WeakMap<SetupPlan, Map<string, string | null>>();
 
@@ -76,7 +77,22 @@ export function selectedClients(names: string[], env: NodeJS.ProcessEnv): AgentC
   return [...new Set(names.length ? names as AgentClient[] : caller ? [caller] : [])];
 }
 
-export function planSetup(cwd: string, clients: AgentClient[]): SetupPlan {
+export function setupProgramId(cwd: string, explicit?: string): number | null {
+  const valid = (value: unknown) => (typeof value === "number" || typeof value === "string") && /^[1-9]\d*$/.test(String(value)) && Number.isSafeInteger(Number(value));
+  if (explicit !== undefined) {
+    if (!valid(explicit)) throw new Error("Setup target program id must be a positive decimal integer.");
+    return Number(explicit);
+  }
+  const project = realpathSync(resolve(cwd));
+  const raw = readTarget(project, join(project, ".affitor/config.json"));
+  if (raw === null) return null;
+  let value: unknown;
+  try { value = JSON.parse(raw); } catch { throw new Error("Setup target project config is invalid. Resolve it before setup."); }
+  if (!object(value) || !valid(value.program_id)) throw new Error("Setup target project config has no valid program id. Pass --program-id explicitly.");
+  return Number(value.program_id);
+}
+
+export function planSetup(cwd: string, clients: AgentClient[], options: { agentKeys?: boolean } = {}): SetupPlan {
   const project = realpathSync(resolve(cwd));
   const launcher = join(project, ".affitor/agent-mcp.cjs");
   const entry = { command: "node", args: [launcher] };
@@ -95,6 +111,22 @@ export function planSetup(cwd: string, clients: AgentClient[]): SetupPlan {
     before.set(path, original);
     plan.actions.push({ path, content, backup, operation: original === content ? "unchanged" : original === null ? "create" : "update" });
   };
+  if (!options.agentKeys && clients.some(client => readTarget(project, join(project, `.affitor/agents/${client}.json`)) !== null)) {
+    throw new Error("Setup target already has per-client credentials. Pass --program-id before updating.");
+  }
+  if (options.agentKeys) {
+    plan.notes.push("Private credential actions may replace revoked/missing keys after sign-in; matching active keys are reused without changing their file.");
+    plan.agentKeys = clients.map(client => {
+      const rel = `.affitor/agents/${client}.json`;
+      const path = join(project, rel), raw = readTarget(project, path);
+      if (raw !== null && process.platform !== "win32" && (lstatSync(path).mode & 0o077) !== 0) throw new Error("Setup target private agent credential must have owner-only permissions.");
+      if (raw !== null && !parseStoredAgentCredential(raw, client)) throw new Error("Setup target has an invalid private agent credential. Resolve it before retrying.");
+      const backup = join(project, ".affitor/backups", `${rel}.affitor.bak`);
+      safePath(project, backup); if (existsSync(backup)) readTarget(project, backup);
+      add(rel, "", raw);
+      return { client, path, state: "pending" };
+    });
+  }
   const editable = clients.filter(client => client !== "codex");
   for (const client of editable) {
     const rel = configFile(client);
@@ -106,7 +138,9 @@ export function planSetup(cwd: string, clients: AgentClient[]): SetupPlan {
     if (!object(config) || (config.mcpServers !== undefined && !object(config.mcpServers))) {
       throw new Error(`${rel} must contain an object with an mcpServers object. Nothing was written.`);
     }
-    config.mcpServers = { ...(config.mcpServers as JsonObject | undefined), affitor: entry };
+    const existingEntry = (config.mcpServers as JsonObject | undefined)?.affitor;
+    if (!options.agentKeys && object(existingEntry) && Array.isArray(existingEntry.args) && existingEntry.args.includes(client)) throw new Error("Setup target uses per-client credentials. Pass --program-id before updating.");
+    config.mcpServers = { ...(config.mcpServers as JsonObject | undefined), affitor: options.agentKeys ? { command: entry.command, args: [...entry.args, client] } : entry };
     add(rel, JSON.stringify(config, null, 2) + "\n", raw);
     add(client === "claude_code" ? ".claude/skills/affitor/SKILL.md" : ".cursor/skills/affitor/SKILL.md", AGENT_SKILL);
   }
@@ -114,9 +148,9 @@ export function planSetup(cwd: string, clients: AgentClient[]): SetupPlan {
     if (process.platform === "win32") {
       // A path may contain cmd.exe expansion/separator characters. Do not emit
       // executable shell text when the invoking Windows shell is unknown.
-      plan.manual.push('Windows: add Affitor in Codex MCP settings using command "node" and the exact argument in entry.args. No shell command is generated.');
+      plan.manual.push('Windows: add Affitor in Codex MCP settings using command "node" and the exact arguments in entry.args plus codex when using per-client agent keys. No shell command is generated.');
     } else {
-      plan.manual.push(`codex mcp add affitor -- node '${launcher.replaceAll("'", "'\"'\"'")}'`);
+      plan.manual.push(`codex mcp add affitor -- node '${launcher.replaceAll("'", "'\"'\"'")}'${options.agentKeys ? ' codex' : ''}`);
     }
     // Installing a shared skill and launcher needs the same explicit consent.
     add(".agents/skills/affitor/SKILL.md", AGENT_SKILL);
@@ -126,8 +160,8 @@ export function planSetup(cwd: string, clients: AgentClient[]): SetupPlan {
     // The final matching rule wins at each directory level. Existing negations
     // must not cancel protection; a child guard also outranks root ignore rules.
     for (const [rel, entries] of [
-      [".gitignore", ["/.affitor/.env", "/.affitor/backups/", "/.affitor/credentials.json"]],
-      [".affitor/.gitignore", ["/.env", "/backups/", "/credentials.json"]],
+      [".gitignore", ["/.affitor/.env", "/.affitor/backups/", "/.affitor/credentials.json", "/.affitor/agents/"]],
+      [".affitor/.gitignore", ["/.env", "/backups/", "/credentials.json", "/agents/"]],
     ] as const) {
       const raw = readTarget(project, join(project, rel));
       const prior = raw ?? "";
@@ -144,8 +178,35 @@ export function planSetup(cwd: string, clients: AgentClient[]): SetupPlan {
     // guard with backups on rollback even if the root .gitignore is restored.
     plan.actions.unshift(plan.actions.pop()!);
   }
+  if (options.agentKeys && clients.length) {
+    const guard = ".affitor/agents/.gitignore", raw = readTarget(project, join(project, guard));
+    if (raw !== null && !["*", "*\n", "*\r\n"].includes(raw)) throw new Error("Unsafe setup agent directory guard.");
+    add(guard, raw ?? "*\n", raw);
+    const action = plan.actions.pop()!;
+    plan.actions.splice(1, 0, action);
+  }
   snapshots.set(plan, before);
   return plan;
+}
+
+/** These APIs keep credential contents out of the public plan metadata. */
+export function readPlannedAgentCredential(plan: SetupPlan, client: AgentClient): StoredAgentCredential | null {
+  const path = plan.agentKeys?.find(item => item.client === client)?.path;
+  if (!path) throw new Error("Setup plan does not include this agent credential.");
+  const raw = snapshots.get(plan)?.get(path);
+  return raw ? parseStoredAgentCredential(raw, client) : null;
+}
+
+export function stageAgentCredential(plan: SetupPlan, client: AgentClient, record: StoredAgentCredential, minted: boolean) {
+  const item = plan.agentKeys?.find(item => item.client === client);
+  if (!item || !parseStoredAgentCredential(JSON.stringify(record), client)) throw new Error("Setup agent credential is invalid.");
+  const action = plan.actions.find(action => action.path === item.path)!;
+  const original = snapshots.get(plan)!.get(item.path)!;
+  action.content = minted ? JSON.stringify(record, null, 2) + "\n" : original!;
+  action.operation = original === action.content ? "unchanged" : original === null ? "create" : "update";
+  action.backup = original !== null && original !== action.content ? join(plan.project, ".affitor/backups", `.affitor/agents/${client}.json.affitor.bak`) : null;
+  if (action.backup) { safePath(plan.project, action.backup); if (existsSync(action.backup)) readTarget(plan.project, action.backup); }
+  item.id = record.id; item.state = minted ? "minted" : "reused";
 }
 
 function atomicWrite(project: string, path: string, content: string) {
@@ -171,9 +232,11 @@ function atomicWrite(project: string, path: string, content: string) {
 /** Local, synchronous transaction. It detects ordinary concurrent edits; it is not a local sandbox. */
 export function applySetup(plan: SetupPlan, beforeWrite?: (action: FileAction) => void) {
   const before = snapshots.get(plan);
+  if (plan.agentKeys?.some(item => item.state === "pending")) throw new Error("Setup agent credentials have not been prepared.");
   if (!before) throw new Error("Generate a fresh setup plan before applying it.");
   const applied: FileAction[] = [];
   let backupCreated = false;
+  let privateWritten = false;
   try {
     for (const action of plan.actions) {
       if (readTarget(plan.project, action.path) !== before.get(action.path)) throw new Error("A setup file changed after planning. Run setup again.");
@@ -190,6 +253,7 @@ export function applySetup(plan: SetupPlan, beforeWrite?: (action: FileAction) =
         writeFileSync(action.backup, before.get(action.path)!, { flag: "wx", mode: 0o600 });
       }
       applied.push(action);
+      if (plan.agentKeys?.some(item => item.path === action.path)) privateWritten = true;
       atomicWrite(plan.project, action.path, action.content);
     }
   } catch {
@@ -199,7 +263,7 @@ export function applySetup(plan: SetupPlan, beforeWrite?: (action: FileAction) =
       try {
         const original = before.get(action.path)!;
         const current = readTarget(plan.project, action.path);
-        if (backupCreated && action.path === join(plan.project, ".affitor/backups/.gitignore") && original === null && current === action.content) continue;
+        if ((backupCreated || privateWritten) && [join(plan.project, ".affitor/backups/.gitignore"), join(plan.project, ".affitor/agents/.gitignore")].includes(action.path) && original === null && current === action.content) continue;
         if (current === original) continue;
         if (current !== action.content) { concurrent = true; continue; }
         if (original === null) rmSync(action.path);
@@ -210,23 +274,30 @@ export function applySetup(plan: SetupPlan, beforeWrite?: (action: FileAction) =
   }
 }
 
-function credentialWarnings(project: string): string[] {
+export function credentialWarnings(project: string, relativePath = ".affitor/.env"): string[] {
   const env = agentChildEnvironment(process.env, "");
   delete env.AFFITOR_API_KEY;
-  const checked = spawnSync("git", ["-C", project, "ls-files", "--error-unmatch", "--", ".affitor/.env"], { env, encoding: "utf8", timeout: 1500, windowsHide: true });
+  const checked = spawnSync("git", ["-C", project, "ls-files", "--error-unmatch", "--", relativePath], { env, encoding: "utf8", timeout: 1500, windowsHide: true });
   return checked.status === 0 ? ["credential_tracked"] : [];
 }
 
 export function doctor(cwd: string, clients: AgentClient[]) {
   return clients.map(client => {
     try {
-      const plan = planSetup(cwd, [client]);
+      const root = realpathSync(resolve(cwd));
+      const privatePath = join(root, `.affitor/agents/${client}.json`);
+      const rawConfig = client === "codex" ? null : readTarget(root, join(root, configFile(client)));
+      const entry = rawConfig ? JSON.parse(rawConfig)?.mcpServers?.affitor : null;
+      const perClient = existsSync(privatePath) || (Array.isArray(entry?.args) && entry.args.includes(client));
+      const plan = planSetup(cwd, [client], { agentKeys: perClient });
+      const saved = perClient ? readPlannedAgentCredential(plan, client) : null;
+      if (saved) stageAgentCredential(plan, client, saved, false);
       const keyPath = join(plan.project, ".affitor/.env");
-      const credential = parseProgramCredential(process.env.AFFITOR_API_KEY, () => {
+      const credential = perClient ? saved?.api_key : parseProgramCredential(process.env.AFFITOR_API_KEY, () => {
         const stat = lstatSync(keyPath);
         return stat.isFile() && !stat.isSymbolicLink() ? readFileSync(keyPath, "utf8") : null;
       });
-      return { client, warnings: credentialWarnings(plan.project), notes: plan.notes, status: client === "codex" ? "manual" : plan.actions.some(a => a.operation === "create") ? "missing" : plan.actions.some(a => a.operation === "update") ? "stale" : "aligned", credential: credential ? "present_unverified" : "missing", liveSession: "not_checked", manual: plan.manual };
+      return { client, warnings: credentialWarnings(plan.project, perClient ? `.affitor/agents/${client}.json` : ".affitor/.env"), notes: plan.notes, status: client === "codex" ? "manual" : plan.actions.some(a => a.operation === "create") ? "missing" : plan.actions.some(a => a.operation === "update") ? "stale" : "aligned", credential: credential ? "present_unverified" : "missing", liveSession: "not_checked", manual: plan.manual };
     } catch { return { client, warnings: [], notes: [], status: "invalid", credential: "not_checked", liveSession: "not_checked", manual: [] }; }
   });
 }

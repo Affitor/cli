@@ -4,85 +4,106 @@ CLI-native affiliate tracking. Connect Stripe, track commissions, manage partner
 
 ## AI agent setup
 
-From the project root, preview the local installation before applying it:
+Preview the selected client's installation from your project root. Sign in using
+Affitor's existing login command, then apply the plan:
 
 ```bash
-affitor agent setup --client claude_code --dry-run --json
-affitor agent setup --client claude_code --yes
+affitor login
+affitor agent setup --client claude_code --program-id 123 --dry-run --json
+affitor agent setup --client claude_code --program-id 123 --yes
 affitor doctor --client claude_code --json
 ```
 
+`--program-id` is optional when `.affitor/config.json` already links a program.
+An interactive terminal can select a program from the signed-in account's list.
+Without a linked/selected program, setup remains a local installer using an existing
+program key and explains how to rerun for separate agent credentials. It does not
+mint a key in this mode. Existing per-client setups cannot be downgraded to this
+legacy mode: pass the program id when updating them. This feature requires the CMS program-agent API release;
+a missing route or insufficient Owner access fails without falling back to a live key.
+
 Choose `claude_code`, `cursor`, or `codex`; repeat `--client` for more than one.
-Without a selection, an interactive terminal asks, with nothing selected by default.
-Noninteractive runs require `--yes` and a selection. Inside an agent, setup can only
-configure that agent. `--dry-run` writes nothing. Without confirmation, setup exits1.
+Detected clients are not selected automatically. Inside an agent, setup can only
+configure itself. Noninteractive runs require a selection and `--yes` (or
+`--auto-confirm`). `--dry-run` makes no API calls and writes nothing. Without consent,
+setup exits1. A linked project with no valid saved login returns `needs_login`
+(exit1), with no minted key or local write. Run `affitor login` and retry.
 
-Claude Code uses project `.mcp.json`; Cursor uses `.cursor/mcp.json`. Existing
-unrelated settings are preserved. Existing file bytes are backed up under
-`.affitor/backups/` before replacement, with mode0600; generated `.gitignore`
-entries exclude backups and `.affitor/.env`. Updates use atomic replacement and
-read-back, rolling back prior writes on failure. Backups and their local ignore
-guard are kept on failure so a restored root `.gitignore` cannot expose them.
-An existing backup guard must contain only `*`; negation or extra rules are refused.
-It is installed before any merged config is written. Temporary writes stay under
-this private, ignored backup directory, including after abrupt process termination.
-Credential and backup ignore rules are appended at the end of both the root
-`.gitignore` and `.affitor/.gitignore`, preserving earlier custom rules while
-overriding negations. Existing files are backed up before changing them. The child
-guard also protects `credentials.json` when a project directory is your home.
-A concurrent edit is preserved;
-inspect the files and private backups before retrying. This protects ordinary
-local edits, not a hostile process racing filesystem operations.
+For a selected program, each client gets its own restricted `aff_ag_` credential.
+Only an active program Owner can mint/list/revoke it through the user-JWT lifecycle
+API. Neither `--api-key` nor inherited `AFFITOR_API_KEY` is used as that user JWT.
+Setup lists existing credentials to reuse a matching active local key, without
+calling readiness/status or marking an agent connected. Revoked or missing rows
+are replaced on the next approved setup. The keys permit readiness, status,
+synthetic checks, click and lead; they cannot authorize sale/refund.
 
-The generated `.affitor/agent-mcp.cjs` launcher starts pinned `@affitor/mcp@0.2.2`
-from this project's absolute directory. No credential is embedded in an agent
-config, launcher, or skill. The launcher reads inherited `AFFITOR_API_KEY`, then
-this project's `.affitor/.env` (created by `affitor init`). It never reads the user
-login token in `~/.affitor/credentials.json`. If `onboard` wrote a key to your root
-`.env`, provide it privately as `AFFITOR_API_KEY` when starting the agent instead.
-It removes inherited API URL overrides regardless of their casing and uses the
-production API. It disables sale/refund tools even when the parent
-environment has `AFFITOR_MCP_WRITE=1`. Other tools still include tracking and
-synthetic verification; approve those actions separately.
+Private credentials live at `.affitor/agents/<client>.json` (mode0600 on POSIX),
+separate from the application's live key in `.affitor/.env`. Setup preserves the
+application key. The JSON includes the key's id, program, client, API origin and
+an unverified scope/date note. Do not commit or share this file. A selected
+credential belonging to another program/origin must be revoked and removed before
+switching. Unsafe paths, malformed private files, POSIX permissions broader than
+owner-only and Git-tracked private credentials are refused.
+
+Claude Code uses project `.mcp.json`; Cursor uses `.cursor/mcp.json`. Their entries
+contain only `node`, an absolute `.affitor/agent-mcp.cjs` path and a client selector.
+No credential appears in MCP config, the launcher, skill, plan or command output.
+The launcher reads only the selected client's private file, ignoring inherited or
+application keys. A missing/invalid selected key fails closed. Its API origin comes
+from that private record (default production; use an explicit `--api-url` for an
+HTTPS custom origin). It never reads a user login token. Legacy entries with no
+client selector still read inherited `AFFITOR_API_KEY`, then `.affitor/.env`, using
+the same strict env parser as static doctor. Their API origin remains production.
+
+Existing unrelated settings are preserved. Changed file bytes are backed up under
+`.affitor/backups/` before replacement, with mode0600. Credential, login-token and
+backup ignores are appended to root and child `.gitignore` files; strict `*`
+guards protect private agent files and backups before the first secret write.
+Temporary writes stay under the ignored backup directory, including after abrupt
+termination. Updates use atomic replacement and read-back, rolling back prior writes
+on failure. Concurrent edits are preserved, with private ignore guards retained.
+Inspect files and private backups before retrying. This handles ordinary local
+edits; it is not a sandbox against hostile local filesystem races.
+
+Mint requests are never retried automatically. If a later mint or local write
+fails, setup attempts to revoke every newly minted key whose id it received.
+`revoke_failed_ids` lists known ids needing dashboard cleanup;
+`mint_outcome_unknown: true` means a lost/failed response may have created another
+Waiting row. Review unused Waiting credentials in Settings → Agents and revoke them
+before retrying. An unknown mint result is not reported as a successful rollback.
+Reuse does not revoke pre-existing keys when a local update fails.
 
 A recovery skill is installed in `.claude/skills/affitor/` or `.cursor/skills/affitor/`.
-Codex gets `.agents/skills/affitor/` and a printed `codex mcp add` command; setup
-does not edit its TOML config or run that command. Review it, then run it yourself.
-If you move the project, run setup again to update absolute paths. The printed
-command uses POSIX shell quoting on macOS/Linux. Plan notes flag machine-specific
-absolute paths: keep generated MCP configs local or regenerate on each machine. On Windows, no shell command
-is generated: add the MCP in Codex settings using `command: "node"` and the exact
-absolute path from the preview's `entry.args` as one argument. Do not paste POSIX
-commands into cmd.exe.
+Codex gets `.agents/skills/affitor/` and a printed command; setup does not edit its
+TOML or run the command. On Windows, add the MCP in Codex settings using the exact
+command/argument array in `entries.codex` from the preview. No shell command is
+printed. On macOS/Linux the printed command uses POSIX quoting. Paths are specific
+to this machine: keep generated configs local or regenerate after moving the
+project or on a teammate's machine.
 
-**Installed is not verified.** Successful setup returns `needs_human` (exit0).
-`doctor` is read-only and static: it does not start an agent, connect to the API,
-or prove the key works. It returns `aligned`/`stale`/`missing`/`manual`/`invalid`
-per client and `present_unverified`/`missing` for credentials. With no selection,
-doctor checks existing JSON client configs; an agent caller checks itself.
-Exit0 means all selected static checks align and a credential is present;
-otherwise exit1. A `credential_tracked` warning also returns exit1: doctor checks
-Git when available without changing its index, including when the repository root is above the
-project. Rotate an exposed key and remove it from tracking/history using your
-repository process; adding an ignore rule does not untrack a credential.
-Restart the agent and ask it to call `affitor_readiness`, checking
-the program identity before integration. Only report the readiness checks that pass.
+**Installed is not verified.** Credential setup returns `needs_next_step` (exit0);
+local-only installation returns `needs_human` (exit0). Setup does not run an agent,
+call readiness, or infer Verified from installation. Restart the client and ask:
+“Call affitor_readiness from Affitor and tell me the result.” Check the program
+identity and report only checks that actually pass. Approve synthetic checks and
+other writes separately.
 
-Doctor and the launcher use the same credential parser: empty, duplicate and
-interpolated assignments fail closed. An explicit nonempty environment value
-takes precedence and is validated without reading a file. On Windows, the
-launcher runs `npx.cmd` through `cmd.exe` with a constant command; project paths
-and credentials are passed through `cwd`/environment, outside shell text.
-`NoDefaultCurrentDirectoryInExePath=1` prevents a project-root `npx.cmd` from
-shadowing the PATH executable. The child receives only runtime paths, home/temp,
-locale/terminal settings and the program key; parent proxy, Node options, npm
-overrides and unrelated credentials are dropped. The public npm registry is
-explicit. Project code, the generated launcher, PATH and project `.npmrc` still
-belong to your trusted local environment; this installer is not a sandbox.
+`doctor` is read-only and static: it does not start an agent or connect to the API.
+It returns `aligned`/`stale`/`missing`/`manual`/`invalid` per client and
+`present_unverified`/`missing` for credentials. With no selection it checks existing
+JSON client configs; an agent caller checks itself. Exit0 means selected static
+checks align, credentials are present and no warning exists. Codex stays manual.
+A `credential_tracked` warning returns exit1; Git checks include parent repository
+roots and do not change the index. Rotate exposed keys and resolve tracking/history
+through your repository process; an ignore rule does not untrack them.
 
-This local installer uses an existing program key. Per-agent key issuance,
-pairing, connection telemetry, and the dashboard Agents page are separate work;
-this command does not claim to create or verify an agent connection.
+The launcher starts pinned `@affitor/mcp@0.2.2` with sale/refund tools disabled even
+when the parent sets `AFFITOR_MCP_WRITE=1`. Windows uses a constant `cmd.exe` command
+with `NoDefaultCurrentDirectoryInExePath=1`; paths/keys stay outside shell text.
+The child receives only runtime paths, home/temp, locale/terminal settings, its
+credential and explicit origin. Parent proxy, Node options, npm overrides and
+unrelated credentials are dropped; npm uses the public registry. Project code,
+PATH, `.npmrc` and the launcher remain part of your trusted local environment.
 
 ## Quick Start
 
