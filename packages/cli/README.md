@@ -35,7 +35,8 @@ API. Neither `--api-key` nor inherited `AFFITOR_API_KEY` is used as that user JW
 Setup lists existing credentials to reuse a matching active local key, without
 calling readiness/status or marking an agent connected. Revoked or missing rows
 are replaced on the next approved setup. The keys permit readiness, status,
-synthetic checks, click and lead; they cannot authorize sale/refund.
+synthetic checks, clicks and test-only leads. The server forces agent leads into
+test mode; they cannot settle real customer attribution or authorize sale/refund.
 
 Private credentials live at `.affitor/agents/<client>.json` (mode0600 on POSIX),
 separate from the application's live key in `.affitor/.env`. Setup preserves the
@@ -43,7 +44,10 @@ application key. The JSON includes the key's id, program, client, API origin and
 an unverified scope/date note. Do not commit or share this file. A selected
 credential belonging to another program/origin must be revoked and removed before
 switching. Unsafe paths, malformed private files, POSIX permissions broader than
-owner-only and Git-tracked private credentials are refused.
+owner-only and Git-tracked private credentials are refused. Git must confirm an untracked
+path in a worktree or an actual directory outside any repository. A timeout,
+missing executable, unreadable repository or unexpected exit blocks setup before
+any API call or write.
 
 Claude Code uses project `.mcp.json`; Cursor uses `.cursor/mcp.json`. Their entries
 contain only `node`, an absolute `.affitor/agent-mcp.cjs` path and a client selector.
@@ -93,7 +97,8 @@ It returns `aligned`/`stale`/`missing`/`manual`/`invalid` per client and
 `present_unverified`/`missing` for credentials. With no selection it checks existing
 JSON client configs; an agent caller checks itself. Exit0 means selected static
 checks align, credentials are present and no warning exists. Codex stays manual.
-A `credential_tracked` warning returns exit1; Git checks include parent repository
+A `credential_check_failed` warning means tracking could not be checked and returns
+exit1; fix Git access and retry. A `credential_tracked` warning also returns exit1; Git checks include parent repository
 roots and do not change the index. Rotate exposed keys and resolve tracking/history
 through your repository process; an ignore rule does not untrack them.
 

@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { createServer, type Server } from "node:http";
 import { spawn, spawnSync } from "node:child_process";
 import { chmodSync, existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
@@ -61,6 +61,7 @@ function run(root: string, args: string[]) {
   });
 }
 afterEach(async () => {
+  vi.unstubAllEnvs();
   for (const server of servers.splice(0)) { server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); }
   for (const root of directories.splice(0)) rmSync(root, { recursive: true, force: true });
 });
@@ -154,6 +155,19 @@ describe("authenticated per-client setup against local HTTP CMS", () => {
     if (conflict === "tracked") { expect(spawnSync("git", ["init", "-q", root]).status).toBe(0); expect(spawnSync("git", ["-C", root, "add", ".affitor/agents/claude_code.json"]).status).toBe(0); }
     await expect(installProgramAgents(planSetup(root, ["claude_code"], { agentKeys: true }), 10, cms.api)).rejects.toBeInstanceOf(AgentSetupError);
     expect(cms.requests).toHaveLength(0); expect(JSON.parse(readFileSync(join(root, ".affitor/agents/claude_code.json"), "utf8"))).toEqual(record);
+  });
+  it.skipIf(process.platform === "win32").each(["timeout", "spawn_error", "exit128", "exit2"])("blocks a %s Git check before HTTP or tracked credential writes", async failure => {
+    const root = project(), cms = await fixture(), original = JSON.stringify(stored(cms.origin));
+    put(root, ".affitor/agents/claude_code.json", original);
+    expect(spawnSync("git", ["init", "-q", root]).status).toBe(0);
+    expect(spawnSync("git", ["-C", root, "add", ".affitor/agents/claude_code.json"]).status).toBe(0);
+    const bin = join(root, "test-bin");
+    const action = failure === "timeout" ? "setTimeout(()=>process.exit(0),10000)" : `process.exit(${failure === "exit128" ? 128 : 2})`;
+    put(root, "test-bin/git", failure === "spawn_error" ? "#!/nonexistent/fixture/git-interpreter\n" : `#!${process.execPath}\nif(process.argv.includes('rev-parse'))process.stdout.write('true\\n');else{${action};}\n`);
+    chmodSync(join(bin, "git"), 0o700); vi.stubEnv("PATH", bin);
+    const result = await installProgramAgents(planSetup(root, ["claude_code"], { agentKeys: true }), 10, cms.api).catch(error => error);
+    expect({ blocked: result instanceof AgentSetupError, requests: cms.requests.length, bytesUnchanged: readFileSync(join(root, ".affitor/agents/claude_code.json"), "utf8") === original }).toEqual({ blocked: true, requests: 0, bytesUnchanged: true });
+    expect(doctor(root, ["claude_code"])[0].warnings).toContain("credential_check_failed");
   });
   it("doctor warns about tracked per-client secrets without touching the index", async () => {
     const root = project(), cms = await fixture(); await installProgramAgents(planSetup(root, ["claude_code"], { agentKeys: true }), 10, cms.api);

@@ -68,7 +68,7 @@ export class ProgramAgentClient {
     }
     const created = new Date().toISOString();
     return { version: 1, id: row.id, program_id: programId, client, api_url: this.origin, created_at: created,
-      credential_note: `Signed-in account; program ${programId}; ${client}; readiness/status/synthetic-test/click/lead only; created ${created}; not verified. Never commit this file.`,
+      credential_note: `Signed-in account; program ${programId}; ${client}; readiness/status/synthetic-test/click/test-only lead; created ${created}; not verified. Never commit this file.`,
       api_key: row.api_key };
   }
   async revoke(programId: number, id: number): Promise<void> {
@@ -81,7 +81,9 @@ export class ProgramAgentClient {
 export async function installProgramAgents(plan: SetupPlan, programId: number, api: ProgramAgentClient, apply: typeof applySetup = applySetup) {
   if (!positive(programId) || !plan.agentKeys || plan.agentKeys.length !== plan.clients.length) throw new AgentSetupError("Generate a fresh agent-key setup plan.");
   const existing = plan.clients.map(client => {
-    if (credentialWarnings(plan.project, `.affitor/agents/${client}.json`).length) throw new AgentSetupError("A private agent credential is tracked by Git. Rotate it and resolve tracking/history before setup.");
+    const warnings = credentialWarnings(plan.project, `.affitor/agents/${client}.json`);
+    if (warnings.includes("credential_tracked")) throw new AgentSetupError("A private agent credential is tracked by Git. Rotate it and resolve tracking/history before setup.");
+    if (warnings.length) throw new AgentSetupError("Git credential tracking could not be checked. Resolve Git access and retry; no agent key was minted or files written.");
     const record = readPlannedAgentCredential(plan, client);
     if (record && (record.program_id !== programId || record.api_url !== api.origin)) throw new AgentSetupError("A selected agent belongs to another program or API origin. Revoke and remove that private credential before switching.");
     return { client, record };

@@ -274,11 +274,36 @@ export function applySetup(plan: SetupPlan, beforeWrite?: (action: FileAction) =
   }
 }
 
+/** No marker means Git really has nowhere to discover a worktree (GIT_* overrides are dropped). */
+function hasGitAncestor(project: string): boolean | null {
+  let current = project;
+  for (;;) {
+    try { lstatSync(join(current, ".git")); return true; }
+    catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") return null; }
+    const parent = dirname(current);
+    if (parent === current) return false;
+    current = parent;
+  }
+}
+
 export function credentialWarnings(project: string, relativePath = ".affitor/.env"): string[] {
   const env = agentChildEnvironment(process.env, "");
   delete env.AFFITOR_API_KEY;
-  const checked = spawnSync("git", ["-C", project, "ls-files", "--error-unmatch", "--", relativePath], { env, encoding: "utf8", timeout: 1500, windowsHide: true });
-  return checked.status === 0 ? ["credential_tracked"] : [];
+  // Fixed locale permits only Git's exact no-repository result; other failures stay unknown.
+  env.LC_ALL = "C";
+  const run = (args: string[]) => spawnSync("git", ["-C", project, ...args], { env, encoding: "utf8", timeout: 1500, windowsHide: true });
+  const discovery = run(["rev-parse", "--is-inside-work-tree"]);
+  const failed = ["credential_check_failed"];
+  if (discovery.error || discovery.signal) return failed;
+  if (discovery.status === 128) {
+    const noRepository = /^fatal: not a git repository \(or any of the parent directories\): \.git\r?\n?$/.test(discovery.stderr ?? "");
+    return noRepository && discovery.stdout === "" && hasGitAncestor(project) === false ? [] : failed;
+  }
+  if (discovery.status !== 0 || discovery.stdout.trim() !== "true") return failed;
+  const checked = run(["ls-files", "--error-unmatch", "--", relativePath]);
+  if (checked.error || checked.signal) return failed;
+  if (checked.status === 0) return ["credential_tracked"];
+  return checked.status === 1 ? [] : failed;
 }
 
 export function doctor(cwd: string, clients: AgentClient[]) {

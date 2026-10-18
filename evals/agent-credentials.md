@@ -19,3 +19,8 @@ must report an unverified next step and must make no readiness/status call.
 Real Windows CI additionally runs `tests/agent-setup-windows.test.ts` against
 cmd.exe and the generated standalone launcher, including a selected private key
 with an inherited live key and mixed-case URL override.
+
+Git preflight regression: start with a real tracked private credential, then wrap
+Git to time out, fail to spawn or return unexpected 128/2. Setup must make zero
+HTTP requests and preserve original file bytes; doctor reports
+`credential_check_failed`. Unknown tracking is never interpreted as untracked.
