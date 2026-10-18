@@ -98,13 +98,19 @@ export async function runOnboard(opts: OnboardOpts, flags: CLIFlags) {
 
   // Does Affitor already record this program's Stripe payments (Connect)? Read once, before the
   // wizard, so neither the wizard nor the sale step advises a second, double-counting trackSale.
-  const stripeAccountBound = provider === "stripe" ? await stripeBindingFor(api, cwd, apiKey, flags.json) : undefined;
+  const stripeBinding = provider === "stripe"
+    ? await stripeBindingFor(api, cwd, apiKey, flags.json)
+    : { bound: undefined, keyMismatch: false };
+  const stripeAccountBound = stripeBinding.bound;
 
   // ── (c) Browser tracking — reuse init's wizard (install @affitor/sdk +
   // inject <AffitorTracker/> via diff-preview+confirm + scaffold lib/affitor.ts).
   // Skipped in --json mode (the wizard is interactive/printed output). ──
   if (!flags.json) {
-    await runInstallWizard({ cwd, programId: "", apiUrl, autoConfirm, stripeRecordsSales: stripeAccountBound === true });
+    await runInstallWizard({
+      cwd, programId: "", apiUrl, autoConfirm,
+      stripeRecordsSales: provider === "stripe" ? (stripeAccountBound === true ? true : "unknown") : undefined,
+    });
     steps.push({ step: "browser_tracking", status: "ok", detail: "via install wizard" });
   } else {
     steps.push({ step: "browser_tracking", status: "skipped", detail: "json mode" });
@@ -115,7 +121,7 @@ export async function runOnboard(opts: OnboardOpts, flags: CLIFlags) {
     cwd,
     framework: stack.framework,
     provider,
-    interactive,
+    interactive: interactive && !stripeBinding.keyMismatch,
     autoConfirm,
     json: flags.json,
     stripeAccountBound,
@@ -183,10 +189,12 @@ interface WireSaleArgs {
  * v3.16.91 it was true for any Server API program. undefined when the call fails or the field
  * is missing, so the caller asks instead of guessing.
  */
-export async function readStripeAccountBound(api: Pick<AffitorAPI, "getStatus">): Promise<boolean | undefined> {
+export async function readStripeAccountBound(api: Pick<AffitorAPI, "getStatus">): Promise<true | undefined> {
   try {
     const status = await api.getStatus();
-    return typeof status?.stripe_account_bound === "boolean" ? status.stripe_account_bound : undefined;
+    // A disconnected/shared account can still deliver earlier events. Only true is decisive;
+    // false describes the current binding, not the absence of a Connect sale writer.
+    return status?.stripe_account_bound === true ? true : undefined;
   } catch {
     return undefined;
   }
@@ -197,7 +205,7 @@ export function envApiKey(cwd: string): { envName: string; value?: string } {
   const envName = existsSync(join(cwd, ".env.local")) ? ".env.local" : ".env";
   const envPath = join(cwd, envName);
   if (!existsSync(envPath)) return { envName };
-  const m = readFileSync(envPath, "utf8").match(/^AFFITOR_API_KEY=(.*)$/m);
+  const m = readFileSync(envPath, "utf8").match(/^\s*(?:export\s+)?AFFITOR_API_KEY\s*=(.*)$/m);
   return { envName, value: m ? m[1].trim() : undefined };
 }
 
@@ -211,15 +219,16 @@ async function stripeBindingFor(
   cwd: string,
   apiKey: string,
   json: boolean,
-): Promise<boolean | undefined> {
+): Promise<{ bound: true | undefined; keyMismatch: boolean }> {
   const env = envApiKey(cwd);
-  if (env.value && env.value !== apiKey) {
+  const processKey = process.env.AFFITOR_API_KEY;
+  if ((env.value !== undefined && env.value !== apiKey) || (processKey && processKey !== apiKey)) {
     if (!json) {
-      logger.warn(`${env.envName} holds a different AFFITOR_API_KEY, so this key's Stripe status may not be the one your app runs with.`);
+      logger.warn(`The existing AFFITOR_API_KEY in the environment or ${env.envName} may differ from this key. Resolve that conflict before adding sale tracking.`);
     }
-    return undefined;
+    return { bound: undefined, keyMismatch: true };
   }
-  return readStripeAccountBound(api);
+  return { bound: await readStripeAccountBound(api), keyMismatch: false };
 }
 
 /**
@@ -254,10 +263,10 @@ export async function wireServerSale(args: WireSaleArgs): Promise<OnboardStep> {
   // webhook would record the same payment a second time (a subscription's first payment as two
   // sales). Never add one then; when the connection is unknown, ask, and without a person to
   // ask, change nothing.
-  let connected = args.stripeAccountBound;
+  let connected: boolean | undefined = args.stripeAccountBound === true ? true : undefined;
   if (connected === undefined && interactive && !autoConfirm && !json) {
     connected = await confirmAction(
-      "Is Stripe connected for this program in Affitor (Program settings › Payments)?",
+      "Could Stripe Connect still report sales for this program (including a shared account or delayed events after disconnect)?",
     );
   }
   if (connected !== false) {
@@ -380,7 +389,7 @@ function skipSaleForConnect(args: {
       );
     }
     if (unknown) {
-      printRecipe(recipe, hook, "Add the sale call only if Stripe is not connected in Affitor");
+      printRecipe(recipe, hook, "Review manually: add a sale call only after ruling out current, shared-account and delayed Connect events");
     } else {
       printRecipe(
         getRecipe(toRecipeFramework(framework), "stripe", "stripe_connect"),
@@ -454,23 +463,22 @@ function writeApiKeyToEnv(
   apiKey: string,
   opts: { autoConfirm: boolean; json: boolean },
 ): OnboardStep {
-  const envName = existsSync(join(cwd, ".env.local")) ? ".env.local" : ".env";
+  const { envName, value: existingValue } = envApiKey(cwd);
   const envPath = join(cwd, envName);
   const line = `AFFITOR_API_KEY=${apiKey}`;
 
   let content = "";
   if (existsSync(envPath)) {
     content = readFileSync(envPath, "utf8");
-    const existing = content.match(/^AFFITOR_API_KEY=(.*)$/m);
-    if (existing) {
-      if (existing[1].trim() === apiKey) {
+    if (existingValue !== undefined) {
+      if (existingValue === apiKey) {
         if (!opts.json) logger.step(`${envName} already has AFFITOR_API_KEY — skipped`);
         return { step: "env_key", status: "already", detail: envName };
       }
       // Different value present — NEVER overwrite a secret. Print a notice.
       if (!opts.json) {
         logger.warn(`${envName} already has a different AFFITOR_API_KEY — left unchanged.`);
-        logger.step(`To use this key instead, set: ${line}`);
+        logger.step(`To use this key instead, update AFFITOR_API_KEY in ${envName} manually.`);
       }
       return { step: "env_key", status: "manual", detail: `${envName}: existing value kept` };
     }
@@ -485,7 +493,7 @@ function writeApiKeyToEnv(
 
   logger.newline();
   logger.info(`  ${format.dim(`Add to ${envName}:`)}`);
-  logger.info(`    ${format.green("+ " + line)}`);
+  logger.info(`    ${format.green("+ AFFITOR_API_KEY=<program key>")}`);
   logger.newline();
 
   const needsNewline = content.length > 0 && !content.endsWith("\n");

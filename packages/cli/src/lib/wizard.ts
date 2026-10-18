@@ -24,8 +24,8 @@ export interface WizardOptions {
   programId: string | number;
   apiUrl: string;
   autoConfirm: boolean;
-  /** Stripe is bound to the program in Affitor: sales and refunds come from Stripe, so no trackSale advice. */
-  stripeRecordsSales?: boolean;
+  /** true: bound now; unknown: onboarding cannot rule out Connect. Both suppress sale advice. */
+  stripeRecordsSales?: true | "unknown";
 }
 
 function rel(cwd: string, p: string): string {
@@ -148,7 +148,7 @@ async function setupServerTracking(
   // (the trackSale call belongs right after constructEvent). Best-effort hint —
   // we still print the full snippets below as the canonical reference.
   if (provider === "stripe" && opts.stripeRecordsSales) {
-    printServerSnippets(serverTrackingSnippets(provider), { salesFromStripe: true });
+    printServerSnippets(serverTrackingSnippets(provider), { salesFromStripe: opts.stripeRecordsSales });
     return;
   }
   if (provider === "stripe") {
@@ -166,11 +166,14 @@ async function setupServerTracking(
   printServerSnippets(serverTrackingSnippets(provider));
 }
 
-function printServerSnippets(s: TrackingSnippets, opts: { salesFromStripe?: boolean } = {}): void {
+function printServerSnippets(s: TrackingSnippets, opts: { salesFromStripe?: true | "unknown" } = {}): void {
   const lines: string[] = ["", `  ${format.dim("1) At signup — bind the customer (server-side):")}`];
   for (const l of s.lead.split("\n")) lines.push(`  ${format.cyan(l)}`);
   if (opts.salesFromStripe) {
-    lines.push("", `  ${format.dim("2) Sales and refunds: recorded from your connected Stripe. Do not add trackSale; it would count each payment twice.")}`, "");
+    const advice = opts.salesFromStripe === true
+      ? "2) Stripe is bound in Affitor. Do not add a second trackSale path; it can count a payment twice."
+      : "2) Stripe sale tracking needs review. Check current, shared-account and delayed Connect events before adding trackSale.";
+    lines.push("", `  ${format.dim(advice)}`, "");
     logger.titledBox("Track conversions (add to your backend)", lines);
     return;
   }

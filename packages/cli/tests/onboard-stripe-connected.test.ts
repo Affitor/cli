@@ -87,6 +87,7 @@ function wire(cwd: string, over: Partial<Parameters<typeof wireServerSale>[0]> =
 }
 
 beforeEach(() => {
+  vi.stubEnv("AFFITOR_API_KEY", undefined);
   confirmAction.mockReset();
   wizardCalls.length = 0;
   apiState.status = {};
@@ -95,6 +96,7 @@ beforeEach(() => {
   vi.spyOn(console, "error").mockImplementation(() => {});
 });
 afterEach(() => {
+  vi.unstubAllEnvs();
   vi.restoreAllMocks();
   process.exitCode = undefined;
   while (dirs.length) rmSync(dirs.pop()!, { recursive: true, force: true });
@@ -121,11 +123,11 @@ describe("wireServerSale — Stripe connected in Affitor", () => {
 });
 
 describe("wireServerSale — Stripe not connected", () => {
-  it("adds the sale call as before (--yes)", async () => {
+  it("a false current binding cannot rule out delayed/shared-account events (--yes leaves the webhook alone)", async () => {
     const dir = project();
     const step = await wire(dir, { stripeAccountBound: false });
-    expect(step).toMatchObject({ status: "ok", detail: HOOK_FILE });
-    expect(webhookOf(dir)).toContain("await affitor.trackSale({");
+    expect(step.status).toBe("manual");
+    expect(webhookOf(dir)).toBe(WEBHOOK);
   });
 });
 
@@ -152,7 +154,8 @@ describe("wireServerSale — connection unknown", () => {
     confirmAction.mockResolvedValueOnce(true);
     const step = await wire(dir, { stripeAccountBound: undefined, interactive: true, autoConfirm: false });
     expect(confirmAction).toHaveBeenCalledTimes(1);
-    expect(confirmAction.mock.calls[0][0]).toContain("Is Stripe connected");
+    expect(confirmAction.mock.calls[0][0]).toContain("Could Stripe Connect still report sales");
+    expect(confirmAction.mock.calls[0][0]).toContain("delayed events after disconnect");
     expect(step.status).toBe("skipped");
     expect(webhookOf(dir)).toBe(WEBHOOK);
   });
@@ -172,7 +175,7 @@ describe("readStripeAccountBound", () => {
 
   it("reads stripe_account_bound from GET /v1/cli/status", async () => {
     expect(await readStripeAccountBound(api({ stripe_account_bound: true, stripe_connected: false }))).toBe(true);
-    expect(await readStripeAccountBound(api({ stripe_account_bound: false }))).toBe(false);
+    expect(await readStripeAccountBound(api({ stripe_account_bound: false }))).toBeUndefined();
   });
 
   it("an older CMS that only sends stripe_connected is unknown, never trusted (it meant Server API mode once)", async () => {
@@ -217,11 +220,11 @@ function app(env?: string): string {
   return dir;
 }
 
-async function onboardIn(dir: string, opts: Record<string, unknown> = {}) {
+async function onboardIn(dir: string, opts: Record<string, unknown> = {}, flags: Partial<typeof FLAGS> = {}) {
   const cwd = process.cwd();
   process.chdir(dir);
   try {
-    await runOnboard({ apiKey: "key_a", yes: true, ...opts }, FLAGS);
+    await runOnboard({ apiKey: "key_a", yes: true, ...opts }, { ...FLAGS, ...flags });
   } finally {
     process.chdir(cwd);
   }
@@ -236,12 +239,12 @@ describe("runOnboard reads the binding and passes it on", () => {
     expect(wizardCalls[0]).toMatchObject({ stripeRecordsSales: true });
   });
 
-  it("not bound: the sale call is added (--yes)", async () => {
+  it("not bound: --yes leaves the webhook alone and the wizard gets unknown", async () => {
     apiState.status = { stripe_account_bound: false };
     const dir = app();
     await onboardIn(dir);
-    expect(webhookOf(dir)).toContain("await affitor.trackSale({");
-    expect(wizardCalls[0]).toMatchObject({ stripeRecordsSales: false });
+    expect(webhookOf(dir)).toBe(WEBHOOK);
+    expect(wizardCalls[0]).toMatchObject({ stripeRecordsSales: "unknown" });
   });
 
   it("an older CMS (stripe_connected only): unknown, so --yes leaves the webhook alone", async () => {
@@ -260,9 +263,56 @@ describe("runOnboard reads the binding and passes it on", () => {
   });
 
   it("the env file holds the same key: the answer is used", async () => {
-    apiState.status = { stripe_account_bound: false };
+    apiState.status = { stripe_account_bound: true };
     const dir = app("AFFITOR_API_KEY=key_a\n");
     await onboardIn(dir);
-    expect(webhookOf(dir)).toContain("await affitor.trackSale({");
+    expect(webhookOf(dir)).toBe(WEBHOOK);
+    expect(wizardCalls[0]).toMatchObject({ stripeRecordsSales: true });
+  });
+
+  it.each([{ noInteractive: true }, { json: true }])('false stays manual with flags %j', async (flags) => {
+    apiState.status = { stripe_account_bound: false };
+    const dir = app();
+    await onboardIn(dir, { yes: false }, flags);
+    expect(webhookOf(dir)).toBe(WEBHOOK);
+    expect(confirmAction).not.toHaveBeenCalled();
+  });
+
+  it('interactive false asks about possible Connect events before a diff can be confirmed', async () => {
+    apiState.status = { stripe_account_bound: false };
+    const dir = app();
+    confirmAction.mockResolvedValueOnce(false).mockResolvedValueOnce(true);
+    await onboardIn(dir, { yes: false });
+    expect(confirmAction.mock.calls[0][0]).toContain('shared account');
+    expect(confirmAction).toHaveBeenCalledTimes(2);
+    expect(webhookOf(dir)).toContain('await affitor.trackSale({');
+  });
+
+  it.each(['AFFITOR_API_KEY=key_b\n', 'export AFFITOR_API_KEY = key_b\n'])('key mismatch stays manual even interactively (%s)', async (env) => {
+    apiState.status = { stripe_account_bound: false };
+    const dir = app(env);
+    confirmAction.mockResolvedValue(false);
+    await onboardIn(dir, { yes: false });
+    expect(webhookOf(dir)).toBe(WEBHOOK);
+    expect(readFileSync(join(dir, '.env'), 'utf8')).toBe(env);
+    expect(confirmAction).not.toHaveBeenCalled();
+  });
+
+  it('a runtime process key conflict cannot be overridden by answering the Connect question', async () => {
+    vi.stubEnv('AFFITOR_API_KEY', 'key_b');
+    apiState.status = { stripe_account_bound: false };
+    const dir = app();
+    confirmAction.mockResolvedValue(false);
+    await onboardIn(dir, { yes: false });
+    expect(webhookOf(dir)).toBe(WEBHOOK);
+    expect(confirmAction).not.toHaveBeenCalled();
+  });
+
+  it.each([undefined, 'AFFITOR_API_KEY=key_b\n'])('never prints a full program key in the env diff or conflict advice', async (env) => {
+    const key = 'test_program_key_not_a_real_secret';
+    const dir = app(env);
+    await onboardIn(dir, { apiKey: key });
+    const output = vi.mocked(console.log).mock.calls.flat().join('\n');
+    expect(output).not.toContain(key);
   });
 });
