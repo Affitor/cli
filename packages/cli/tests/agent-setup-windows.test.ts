@@ -39,11 +39,31 @@ describe.skipIf(process.platform !== "win32")("Windows generated launcher smoke"
       expect(launcher.status, launcher.stderr + launcher.stdout).toBe(0);
       expect(JSON.parse(launcher.stdout)).toEqual({ args: ["--registry=https://registry.npmjs.org", "-y", "@affitor/mcp@0.2.2"], cwd: project, key: "fake_windows_key", write: "0", noCwd: "1", unsafe: [], overrides: ["AFFITOR_MCP_WRITE"] });
       const doctor = spawnSync(process.execPath, [cli, "doctor", "--client", "claude_code", "--json"], { cwd: project, env, encoding: "utf8" });
-      expect(doctor.status, doctor.stderr + doctor.stdout).toBe(0);
+      // This fixture deliberately removes Git from PATH: unknown tracking is a warning.
+      expect(doctor.status, doctor.stderr + doctor.stdout).toBe(1);
+      expect(JSON.parse(doctor.stdout).clients[0].warnings).toEqual(["credential_check_failed"]);
       expect(JSON.parse(doctor.stdout).clients[0].credential).toBe("present_unverified");
       expect(existsSync(join(project, ".claude.json"))).toBe(false);
       expect(readFileSync(join(project, ".mcp.json"), "utf8")).not.toContain("fake_windows_key");
     } finally { rmSync(fixture, { recursive: true, force: true }); }
+  });
+  it("uses real Git to distinguish untracked and tracked credentials", () => {
+    const project = realpathSync(mkdtempSync(join(tmpdir(), "affitor-windows-git-")));
+    const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !["claudecode", "codex", "codex_thread_id", "cursor_agent"].includes(key.toLowerCase())));
+    const cli = resolve("dist/cli.js");
+    try {
+      expect(spawnSync("git", ["init", "-q", project]).status).toBe(0);
+      const setup = spawnSync(process.execPath, [cli, "agent", "setup", "--client", "claude_code", "--yes", "--json"], { cwd: project, env, encoding: "utf8" });
+      expect(setup.status, setup.stderr + setup.stdout).toBe(0);
+      writeFileSync(join(project, ".affitor/.env"), "AFFITOR_API_KEY=fake_windows_key\r\n");
+      const untracked = spawnSync(process.execPath, [cli, "doctor", "--client", "claude_code", "--json"], { cwd: project, env, encoding: "utf8" });
+      expect(untracked.status, untracked.stderr + untracked.stdout).toBe(0);
+      expect(JSON.parse(untracked.stdout).clients[0].warnings).toEqual([]);
+      expect(spawnSync("git", ["-C", project, "add", "-f", ".affitor/.env"]).status).toBe(0);
+      const tracked = spawnSync(process.execPath, [cli, "doctor", "--client", "claude_code", "--json"], { cwd: project, env, encoding: "utf8" });
+      expect(tracked.status, tracked.stderr + tracked.stdout).toBe(1);
+      expect(JSON.parse(tracked.stdout).clients[0].warnings).toEqual(["credential_tracked"]);
+    } finally { rmSync(project, { recursive: true, force: true }); }
   });
   it("uses a selected private agent key instead of an inherited live key", () => {
     const fixture = realpathSync(mkdtempSync(join(tmpdir(), "affitor-windows-agent-key-")));
