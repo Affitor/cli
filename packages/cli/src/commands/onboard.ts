@@ -114,6 +114,7 @@ export async function runOnboard(opts: OnboardOpts, flags: CLIFlags) {
     interactive,
     autoConfirm,
     json: flags.json,
+    stripeConnected: provider === "stripe" ? await readStripeConnected(api) : undefined,
   });
   steps.push(saleStep);
 
@@ -166,6 +167,22 @@ interface WireSaleArgs {
   interactive: boolean;
   autoConfirm: boolean;
   json: boolean;
+  /** The program's Stripe connection in Affitor; undefined when it could not be read. */
+  stripeConnected?: boolean;
+}
+
+/**
+ * Is this program's Stripe connected in Affitor? `GET /v1/cli/status` answers it per program
+ * (`stripe_connected`, the same check as the dashboard's Payments card). undefined when the
+ * call fails or the field is missing, so the caller asks instead of guessing.
+ */
+export async function readStripeConnected(api: Pick<AffitorAPI, "getStatus">): Promise<boolean | undefined> {
+  try {
+    const status = await api.getStatus();
+    return typeof status?.stripe_connected === "boolean" ? status.stripe_connected : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 /**
@@ -177,7 +194,7 @@ interface WireSaleArgs {
  *   - no webhook      → PRINT the full recipe.
  * NEVER auto-edits when the structure isn't cleanly recognized.
  */
-async function wireServerSale(args: WireSaleArgs): Promise<OnboardStep> {
+export async function wireServerSale(args: WireSaleArgs): Promise<OnboardStep> {
   const { cwd, framework, provider, interactive, autoConfirm, json } = args;
 
   // Only Stripe has the auto-edit path (the recipe's sale snippet is keyed to
@@ -195,6 +212,20 @@ async function wireServerSale(args: WireSaleArgs): Promise<OnboardStep> {
   }
 
   const hook = detectStripeWebhook(cwd, framework);
+
+  // A connected Stripe already reports every payment to Affitor, so a trackSale call in the
+  // webhook would record the same payment a second time (a subscription's first payment as two
+  // sales). Never add one then; when the connection is unknown, ask, and without a person to
+  // ask, change nothing.
+  let connected = args.stripeConnected;
+  if (connected === undefined && interactive && !autoConfirm && !json) {
+    connected = await confirmAction(
+      "Is Stripe connected for this program in Affitor (Program settings › Payments)?",
+    );
+  }
+  if (connected !== false) {
+    return skipSaleForConnect({ cwd, framework, recipe, hook, json, unknown: connected === undefined });
+  }
 
   if (!hook) {
     if (!json) {
@@ -269,6 +300,58 @@ async function wireServerSale(args: WireSaleArgs): Promise<OnboardStep> {
   writeFileSync(fileAbs, result.content, "utf8");
   logger.success(`Injected affitor.trackSale into ${hook.file}`);
   return { step: "server_sale", status: "ok", detail: hook.file };
+}
+
+/**
+ * Stripe connected (or unknown with no one to ask): print the Connect recipe (checkout metadata
+ * only) and leave the webhook alone. A webhook that already calls trackSale is pointed out,
+ * since with Stripe connected it counts each payment twice.
+ */
+function skipSaleForConnect(args: {
+  cwd: string;
+  framework: Framework;
+  /** The s2s recipe, printed when the connection is unknown. */
+  recipe: ReturnType<typeof getRecipe>;
+  hook: { file: string; line: number; handlerHint: string } | null;
+  json: boolean;
+  unknown: boolean;
+}): OnboardStep {
+  const { cwd, framework, recipe, hook, json, unknown } = args;
+  let tracksSale = false;
+  if (hook) {
+    try {
+      tracksSale = readFileSync(join(cwd, hook.file), "utf8").includes("trackSale");
+    } catch {
+      /* unreadable: nothing to point out */
+    }
+  }
+
+  if (!json) {
+    if (unknown) {
+      logger.warn("Couldn't tell whether Stripe is connected, so your webhook was left unchanged.");
+    }
+    if (tracksSale) {
+      logger.warn(
+        `${hook!.file} calls trackSale. With Stripe connected, Affitor already records each payment, so remove that call or every sale counts twice.`,
+      );
+    }
+    if (unknown) {
+      printRecipe(recipe, hook, "Add the sale call only if Stripe is not connected in Affitor");
+    } else {
+      printRecipe(
+        getRecipe(toRecipeFramework(framework), "stripe", "stripe_connect"),
+        null,
+        "Stripe connected: Affitor records the sale",
+      );
+    }
+  }
+
+  const detail = unknown
+    ? "stripe connection unknown: webhook unchanged, printed recipe"
+    : tracksSale
+      ? `stripe connected: no trackSale added; ${hook!.file} already calls trackSale (double count)`
+      : "stripe connected: Affitor records the sale, no trackSale added";
+  return { step: "server_sale", status: unknown ? "manual" : "skipped", detail };
 }
 
 /**

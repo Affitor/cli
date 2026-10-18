@@ -43,7 +43,7 @@ It runs the **detect → wire → inject → verify** flow:
 
 1. **Detect** — your framework (`next-app`, `next-pages`, `fastify`, `express`, `node`) and payment provider (Stripe, …).
 2. **Wire** — installs `@affitor/sdk`, injects `<AffitorTracker/>` browser tracking, scaffolds the server client, and persists `AFFITOR_API_KEY` into `.env.local`/`.env`.
-3. **Inject** — locates your Stripe webhook and adds the `affitor.trackSale` call (shown as a diff; non-Stripe stacks and unrecognized webhooks get the exact recipe printed instead — payment code is never auto-edited blindly).
+3. **Inject** — locates your Stripe webhook and adds the `affitor.trackSale` call (shown as a diff; non-Stripe stacks and unrecognized webhooks get the exact recipe printed instead — payment code is never auto-edited blindly). If the program's Stripe is connected in Affitor, nothing is added: Affitor already records each payment from Stripe, and a second call would count it twice. When the CLI cannot tell, it asks; with `--yes` or `--json` it leaves the webhook alone.
 4. **Verify** — fires the synthetic click → lead → sale chain, then **polls readiness until `integration_verified`** (or reports the blocking gate + next action).
 
 It is **idempotent** — re-running skips work already done (existing env key, sale call already present) and never overwrites a different `AFFITOR_API_KEY`.

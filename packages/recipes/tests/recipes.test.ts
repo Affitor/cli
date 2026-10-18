@@ -85,8 +85,9 @@ describe("getRecipe — Stripe sale snippet reads the key the metadata writes (B
     expect(r.metadata.snippet).toContain("affitor_customer_key: user.id");
     // The sale step must READ that same key (with client_reference_id only as a fallback).
     expect(sale).toContain(
-      "customerExternalId: session.metadata?.affitor_customer_key ?? session.client_reference_id",
+      "const affitorKey = session.metadata?.affitor_customer_key ?? session.client_reference_id;",
     );
+    expect(sale).toContain("customerExternalId: affitorKey,");
     // It must NOT read client_reference_id alone (the old, attribution-losing contract).
     expect(sale).not.toMatch(/customerExternalId:\s*session\.client_reference_id,/);
   });
@@ -146,5 +147,104 @@ describe("getRecipe — subscription renewals (#3 invoice.paid)", () => {
   it("getIntegrationPlan includes a Renewals step for stripe s2s", () => {
     const plan = getIntegrationPlan({ framework: "fastify", provider: "stripe", mode: "s2s" });
     expect(plan.steps.some((s) => s.startsWith) && plan.steps.some((s) => /Renewals:/.test(s))).toBe(true);
+  });
+});
+
+/**
+ * The snippets run inside the brand's own webhook, so they must never throw there: a throw
+ * fails the webhook and the provider retries it. The SDK's trackSale throws synchronously
+ * when it has no customer key (affiliate-sdk server.ts trackSale), so the stub below does the
+ * same, and each snippet is run for real, with and without the key.
+ */
+describe("snippets never throw inside the brand's webhook (report 2026-10-17 #5)", () => {
+  const AsyncFunction = Object.getPrototypeOf(async () => {}).constructor;
+
+  function sdkStub() {
+    const calls: Array<Record<string, unknown>> = [];
+    return {
+      calls,
+      trackSale(input: Record<string, unknown>) {
+        if (!input.customerExternalId && !input.clickId) {
+          throw new Error("Affitor.trackSale: `customerExternalId` or `clickId` is required");
+        }
+        calls.push(input);
+        return Promise.resolve({ ok: true, status: 200 });
+      },
+    };
+  }
+
+  function quietConsole() {
+    const warnings: string[] = [];
+    return { warnings, console: { ...console, warn: (...a: unknown[]) => warnings.push(a.join(" ")) } };
+  }
+
+  /** The sale body without its import line, run with `vars` in scope. */
+  async function runSale(provider: "stripe" | "paddle", vars: Record<string, unknown>) {
+    const body = getRecipe("fastify", provider, "s2s").sale!.snippet.replace(/^import .*\n+/, "");
+    const affitor = sdkStub();
+    const c = quietConsole();
+    const names = [...Object.keys(vars), "affitor", "console"];
+    await new AsyncFunction(...names, body)(...Object.values(vars), affitor, c.console);
+    return { calls: affitor.calls, warnings: c.warnings };
+  }
+
+  async function runRenewal(invoice: Record<string, unknown>) {
+    const affitor = sdkStub();
+    const c = quietConsole();
+    const body = `switch (event.type) {\n${getRecipe("fastify", "stripe", "s2s").renewal!.snippet}\n}`;
+    await new AsyncFunction("event", "affitor", "console", body)(
+      { type: "invoice.paid", data: { object: invoice } },
+      affitor,
+      c.console,
+    );
+    return { calls: affitor.calls, warnings: c.warnings };
+  }
+
+  it("Stripe checkout without an Affitor key: logs, sends nothing, does not throw", async () => {
+    const r = await runSale("stripe", { session: { id: "cs_1", amount_total: 4900, metadata: {} } });
+    expect(r.calls).toEqual([]);
+    expect(r.warnings.join("\n")).toContain("cs_1 has no affitor_customer_key");
+  });
+
+  it("Stripe checkout with the key (or only client_reference_id) reports the sale", async () => {
+    const withKey = await runSale("stripe", {
+      session: { id: "cs_2", amount_total: 4900, metadata: { affitor_customer_key: "u_1" } },
+    });
+    expect(withKey.calls).toEqual([{ customerExternalId: "u_1", amount: 4900, invoiceId: "cs_2" }]);
+    const refOnly = await runSale("stripe", { session: { id: "cs_3", amount_total: 100, client_reference_id: "u_2" } });
+    expect(refOnly.calls[0]).toMatchObject({ customerExternalId: "u_2", invoiceId: "cs_3" });
+  });
+
+  it("Stripe $0 checkout: nothing sent, nothing logged", async () => {
+    const r = await runSale("stripe", { session: { id: "cs_4", amount_total: 0 } });
+    expect(r.calls).toEqual([]);
+    expect(r.warnings).toEqual([]);
+  });
+
+  it("Stripe renewal without an Affitor key: logs, sends nothing, does not throw", async () => {
+    const r = await runRenewal({ id: "in_1", billing_reason: "subscription_cycle", amount_paid: 900 });
+    expect(r.calls).toEqual([]);
+    expect(r.warnings.join("\n")).toContain("in_1 has no affitor_customer_key");
+  });
+
+  it("Stripe renewal with the Basil key reports it", async () => {
+    const r = await runRenewal({
+      id: "in_2",
+      billing_reason: "subscription_cycle",
+      amount_paid: 900,
+      parent: { subscription_details: { metadata: { affitor_customer_key: "u_3" }, subscription: "sub_1" } },
+    });
+    expect(r.calls).toEqual([
+      expect.objectContaining({ customerExternalId: "u_3", amount: 900, invoiceId: "in_2", subscriptionId: "sub_1" }),
+    ]);
+  });
+
+  it("Paddle without custom_data.user_id: sends nothing, does not throw", async () => {
+    const r = await runSale("paddle", { data: { id: "txn_1", details: { totals: { total: "1000" } } } });
+    expect(r.calls).toEqual([]);
+    const ok = await runSale("paddle", {
+      data: { id: "txn_2", custom_data: { user_id: "u_4" }, details: { totals: { total: "1000" } } },
+    });
+    expect(ok.calls).toEqual([{ customerExternalId: "u_4", amount: 1000, invoiceId: "txn_2" }]);
   });
 });
