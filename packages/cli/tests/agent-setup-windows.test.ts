@@ -1,4 +1,5 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import { AgentSetupError, ProgramAgentClient } from "../src/lib/program-agent-client.js";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -6,6 +7,19 @@ import { spawnSync } from "node:child_process";
 
 // Runs on the real Windows CI worker, rather than mocking process.platform.
 describe.skipIf(process.platform !== "win32")("Windows generated launcher smoke", () => {
+  it("restricts user JWT origins and requires explicit local development configuration", () => {
+    try {
+      vi.stubEnv("AFFITOR_AGENT_DEV_API_ORIGIN", "");
+      expect(new ProgramAgentClient("fixture_user_jwt", "https://api.affitor.com").origin).toBe("https://api.affitor.com");
+      expect(() => new ProgramAgentClient("fixture_user_jwt", "https://untrusted.example.test")).toThrow(AgentSetupError);
+      expect(() => new ProgramAgentClient("fixture_user_jwt", "http://127.0.0.1:1337")).toThrow(AgentSetupError);
+      vi.stubEnv("AFFITOR_AGENT_DEV_API_ORIGIN", "http://127.0.0.1:1337");
+      expect(new ProgramAgentClient("fixture_user_jwt", "http://127.0.0.1:1337").origin).toBe("http://127.0.0.1:1337");
+      expect(() => new ProgramAgentClient("fixture_user_jwt", "http://127.0.0.1:1338")).toThrow(AgentSetupError);
+      vi.stubEnv("AFFITOR_AGENT_DEV_API_ORIGIN", "https://untrusted.example.test");
+      expect(() => new ProgramAgentClient("fixture_user_jwt", "https://untrusted.example.test")).toThrow(AgentSetupError);
+    } finally { vi.unstubAllEnvs(); }
+  });
   it("ignores a cwd npx.cmd decoy and starts the PATH tool with a safe environment", () => {
     const fixture = realpathSync(mkdtempSync(join(tmpdir(), "affitor-windows-")));
     const project = join(fixture, "project & (spaces) %NO_EXPAND%");
