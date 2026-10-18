@@ -1,0 +1,69 @@
+import { describe, expect, it } from "vitest";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
+import { spawnSync } from "node:child_process";
+
+// Runs on the real Windows CI worker, rather than mocking process.platform.
+describe.skipIf(process.platform !== "win32")("Windows generated launcher smoke", () => {
+  it("starts npx.cmd through cmd.exe with a metacharacter project path and no money tools", () => {
+    const fixture = realpathSync(mkdtempSync(join(tmpdir(), "affitor-windows-")));
+    const project = join(fixture, "project & (spaces) %NO_EXPAND%");
+    const bin = join(project, "bin");
+    mkdirSync(bin, { recursive: true });
+    const env: NodeJS.ProcessEnv = Object.fromEntries(Object.entries(process.env).filter(([key]) => !["path", "affitor_api_key", "affitor_api_url", "affitor_mcp_write", "claudecode", "codex", "codex_thread_id", "cursor_agent"].includes(key.toLowerCase())));
+    env.PATH = bin;
+    env.Affitor_Mcp_Write = "1";
+    env.affitor_api_url = "https://wrong.invalid";
+    env.NO_EXPAND = "wrong-path";
+    const cli = resolve("dist/cli.js");
+    try {
+      const setup = spawnSync(process.execPath, [cli, "agent", "setup", "--client", "claude_code", "--yes", "--json"], { cwd: project, env, encoding: "utf8" });
+      expect(setup.status, setup.stderr + setup.stdout).toBe(0);
+      writeFileSync(join(project, ".affitor/.env"), "AFFITOR_API_KEY=fake_windows_key\r\n");
+      writeFileSync(join(bin, "npx-fixture.cjs"), 'process.stdout.write(JSON.stringify({args:process.argv.slice(2),cwd:process.cwd(),key:process.env.AFFITOR_API_KEY,write:process.env.AFFITOR_MCP_WRITE,overrides:Object.keys(process.env).filter(k=>k.toUpperCase()==="AFFITOR_API_URL"||k.toUpperCase()==="AFFITOR_MCP_WRITE")}));');
+      writeFileSync(join(bin, "npx.cmd"), `@"${process.execPath}" "%~dp0npx-fixture.cjs" %*\r\n`);
+      // Reproduce r1 on the same real Windows worker and the same fixture.
+      const baseline = spawnSync("npx.cmd", ["-y", "@affitor/mcp@0.2.2"], { cwd: project, env, shell: false, encoding: "utf8", timeout: 15000 });
+      expect(baseline.status).not.toBe(0);
+      expect(baseline.error).toBeDefined();
+      const launcher = spawnSync(process.execPath, [join(project, ".affitor/agent-mcp.cjs")], { cwd: fixture, env, encoding: "utf8", timeout: 15000 });
+      expect(launcher.status, launcher.stderr + launcher.stdout).toBe(0);
+      expect(JSON.parse(launcher.stdout)).toEqual({ args: ["-y", "@affitor/mcp@0.2.2"], cwd: project, key: "fake_windows_key", write: "0", overrides: ["AFFITOR_MCP_WRITE"] });
+      const doctor = spawnSync(process.execPath, [cli, "doctor", "--client", "claude_code", "--json"], { cwd: project, env, encoding: "utf8" });
+      expect(doctor.status, doctor.stderr + doctor.stdout).toBe(0);
+      expect(JSON.parse(doctor.stdout).clients[0].credential).toBe("present_unverified");
+      expect(existsSync(join(project, ".claude.json"))).toBe(false);
+      expect(readFileSync(join(project, ".mcp.json"), "utf8")).not.toContain("fake_windows_key");
+    } finally { rmSync(fixture, { recursive: true, force: true }); }
+  });
+  it("refuses to print shell commands for Codex on Windows, including metacharacter paths", () => {
+    const fixture = realpathSync(mkdtempSync(join(tmpdir(), "affitor-windows-codex-")));
+    const project = join(fixture, "project & echo INJECTED & rem (spaces) %NO_EXPAND% !EXPAND! 'quote'");
+    mkdirSync(project);
+    const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !["claudecode", "codex", "codex_thread_id", "cursor_agent"].includes(key.toLowerCase())));
+    try {
+      const setup = spawnSync(process.execPath, [resolve("dist/cli.js"), "agent", "setup", "--client", "codex", "--yes", "--json"], { cwd: project, env, encoding: "utf8" });
+      expect(setup.status, setup.stderr + setup.stdout).toBe(0);
+      const plan = JSON.parse(setup.stdout);
+      // Negative control: the previous POSIX-only command executes a separator
+      // on real cmd.exe. The fixture stub never invokes an actual Codex client.
+      const stubBin = join(fixture, "bin");
+      mkdirSync(stubBin);
+      writeFileSync(join(stubBin, "codex.cmd"), "@echo CODEX_STUB\r\n");
+      const legacyCommand = `codex mcp add affitor -- node '${plan.entry.args[0].replaceAll("'", "'\"'\"'")}'`;
+      const baseline = spawnSync(process.env.ComSpec || "cmd.exe", ["/d", "/s", "/c", legacyCommand], { cwd: fixture, env: { ...env, PATH: stubBin }, encoding: "utf8", timeout: 15000 });
+      expect(baseline.stdout).toContain("INJECTED");
+      expect(plan.manual).toHaveLength(1);
+      expect(plan.manual[0]).toContain("No shell command is generated");
+      expect(plan.manual[0]).not.toContain("codex mcp add");
+      expect(plan.manual[0]).not.toContain(project);
+      expect(plan.entry).toEqual({ command: "node", args: [join(project, ".affitor/agent-mcp.cjs")] });
+      expect(plan.next).toContain("manual configuration instructions");
+      expect(existsSync(plan.entry.args[0])).toBe(true);
+      expect(existsSync(join(project, ".agents/skills/affitor/SKILL.md"))).toBe(true);
+      expect(existsSync(join(project, ".codex/config.toml"))).toBe(false);
+    } finally { rmSync(fixture, { recursive: true, force: true }); }
+  });
+
+});
