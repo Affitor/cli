@@ -109,18 +109,29 @@ export function planSetup(cwd: string, clients: AgentClient[]): SetupPlan {
     add(client === "claude_code" ? ".claude/skills/affitor/SKILL.md" : ".cursor/skills/affitor/SKILL.md", AGENT_SKILL);
   }
   if (clients.includes("codex")) {
-    plan.manual.push(`codex mcp add affitor -- node '${launcher.replaceAll("'", "'\"'\"'")}'`);
+    if (process.platform === "win32") {
+      // A path may contain cmd.exe expansion/separator characters. Do not emit
+      // executable shell text when the invoking Windows shell is unknown.
+      plan.manual.push('Windows: add Affitor in Codex MCP settings using command "node" and the exact argument in entry.args. No shell command is generated.');
+    } else {
+      plan.manual.push(`codex mcp add affitor -- node '${launcher.replaceAll("'", "'\"'\"'")}'`);
+    }
     // Installing a shared skill and launcher needs the same explicit consent.
     add(".agents/skills/affitor/SKILL.md", AGENT_SKILL);
   }
   if (clients.length) {
     add(".affitor/agent-mcp.cjs", AGENT_LAUNCHER);
-    const path = join(project, ".gitignore");
-    const raw = readTarget(project, path);
-    const prior = raw ?? "";
-    const entries = ["/.affitor/.env", "/.affitor/backups/"];
-    const missing = entries.filter(line => !prior.split(/\r?\n/).includes(line));
-    add(".gitignore", missing.length ? prior + (prior && !prior.endsWith("\n") ? "\n" : "") + missing.join("\n") + "\n" : prior, raw);
+    // The final matching rule wins at each directory level. Existing negations
+    // must not cancel protection; a child guard also outranks root ignore rules.
+    for (const [rel, entries] of [
+      [".gitignore", ["/.affitor/.env", "/.affitor/backups/"]],
+      [".affitor/.gitignore", ["/.env", "/backups/"]],
+    ] as const) {
+      const raw = readTarget(project, join(project, rel));
+      const prior = raw ?? "";
+      const suffix = entries.join("\n") + "\n";
+      add(rel, prior.endsWith(suffix) ? prior : prior + (prior && !prior.endsWith("\n") ? "\n" : "") + suffix, raw);
+    }
   }
   if (plan.actions.some(action => action.backup)) {
     const guard = join(project, ".affitor/backups/.gitignore");

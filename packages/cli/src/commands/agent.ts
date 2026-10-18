@@ -48,7 +48,7 @@ export function registerAgentCommands(program: Command) {
           ? "Select --client claude_code, cursor or codex. Detected agents are not selected automatically."
           : status === "needs_confirmation"
             ? "Review the plan, then run affitor agent setup --client <name> --yes."
-            : "Installed is not verified. Configure the program key privately as AFFITOR_API_KEY or in .affitor/.env; restart the selected agent, then ask it to call affitor_readiness. For Codex, first run the printed manual command.";
+            : "Installed is not verified. Configure the program key privately as AFFITOR_API_KEY or in .affitor/.env; restart the selected agent, then ask it to call affitor_readiness. For Codex, first follow the printed manual configuration instructions.";
         if (flags.json) process.stdout.write(JSON.stringify({ status, ...preview, next }) + "\n");
         else process.stdout.write(`${status}\n${next}\n`);
         process.exitCode = status === "needs_confirmation" || (!clients.length && !opts.dryRun) ? 1 : 0;

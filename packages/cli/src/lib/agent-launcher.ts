@@ -34,8 +34,10 @@ if (!key) {
   process.exit(1);
 }
 // Setup never opts into the sale/refund tools, including through inherited env.
-const env = { ...process.env, AFFITOR_API_KEY: key, AFFITOR_MCP_WRITE: '0' };
-delete env.AFFITOR_API_URL;
+const env = Object.fromEntries(Object.entries(process.env).filter(([name]) =>
+  !['AFFITOR_API_URL', 'AFFITOR_API_KEY', 'AFFITOR_MCP_WRITE'].includes(name.toUpperCase())));
+env.AFFITOR_API_KEY = key;
+env.AFFITOR_MCP_WRITE = '0';
 // Windows batch files require cmd.exe. The command contains constants only:
 // project paths and credentials travel through cwd/env, never shell text.
 const windows = process.platform === 'win32';

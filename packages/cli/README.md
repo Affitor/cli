@@ -24,6 +24,9 @@ entries exclude backups and `.affitor/.env`. Updates use atomic replacement and
 read-back, rolling back prior writes on failure. Backups and their local ignore
 guard are kept on failure so a restored root `.gitignore` cannot expose them.
 An existing backup guard must contain only `*`; negation or extra rules are refused.
+Credential and backup ignore rules are appended at the end of both the root
+`.gitignore` and `.affitor/.gitignore`, preserving earlier custom rules while
+overriding negations. Existing files are backed up before changing them.
 A concurrent edit is preserved;
 inspect the files and private backups before retrying. This protects ordinary
 local edits, not a hostile process racing filesystem operations.
@@ -34,7 +37,8 @@ config, launcher, or skill. The launcher reads inherited `AFFITOR_API_KEY`, then
 this project's `.affitor/.env` (created by `affitor init`). It never reads the user
 login token in `~/.affitor/credentials.json`. If `onboard` wrote a key to your root
 `.env`, provide it privately as `AFFITOR_API_KEY` when starting the agent instead.
-It uses the production API and disables sale/refund tools even when the parent
+It removes inherited API URL overrides regardless of their casing and uses the
+production API. It disables sale/refund tools even when the parent
 environment has `AFFITOR_MCP_WRITE=1`. Other tools still include tracking and
 synthetic verification; approve those actions separately.
 
@@ -42,7 +46,10 @@ A recovery skill is installed in `.claude/skills/affitor/` or `.cursor/skills/af
 Codex gets `.agents/skills/affitor/` and a printed `codex mcp add` command; setup
 does not edit its TOML config or run that command. Review it, then run it yourself.
 If you move the project, run setup again to update absolute paths. The printed
-command uses POSIX shell quoting.
+command uses POSIX shell quoting on macOS/Linux. On Windows, no shell command
+is generated: add the MCP in Codex settings using `command: "node"` and the exact
+absolute path from the preview's `entry.args` as one argument. Do not paste POSIX
+commands into cmd.exe.
 
 **Installed is not verified.** Successful setup returns `needs_human` (exit0).
 `doctor` is read-only and static: it does not start an agent, connect to the API,

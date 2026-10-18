@@ -65,6 +65,18 @@ describe("local transaction", () => {
     expect(existsSync(join(dir, ".affitor/backups/.mcp.json.affitor.bak"))).toBe(false);
     expect(readFileSync(join(dir, ".mcp.json"), "utf8")).toBe('{"other":{"token":"fake_private"}}');
   });
+  it.each([false, true])("keeps credentials ignored despite negations (child=%s)", child => {
+    const dir = project();
+    expect(spawnSync("git", ["init", "-q", dir]).status).toBe(0);
+    put(dir, ".gitignore", "/.affitor/.env\n!/.affitor/.env\n");
+    if (child) put(dir, ".affitor/.gitignore", "!/.env\n");
+    put(dir, ".affitor/.env", "AFFITOR_API_KEY=fake_gitignore_key\n");
+    expect(spawnSync("git", ["-C", dir, "check-ignore", ".affitor/.env"]).status).toBe(1);
+    applySetup(planSetup(dir, ["claude_code"]));
+    expect(spawnSync("git", ["-C", dir, "check-ignore", ".affitor/.env"]).status).toBe(0);
+    expect(readFileSync(join(dir, ".affitor/.env"), "utf8")).toBe("AFFITOR_API_KEY=fake_gitignore_key\n");
+    expect(planSetup(dir, ["claude_code"]).actions.every(a => a.operation === "unchanged")).toBe(true);
+  });
   it("preserves unrelated entries, backs up original bytes privately, sets0600 and is idempotent", () => {
     const dir = project(), original = '{ "mcpServers": {"other":{"env":{"TOKEN":"fake-private-value"}}}, "keep":123 }';
     put(dir, ".mcp.json", original);
@@ -172,7 +184,7 @@ describe("real generated launcher without network", () => {
   }
   function install(dir: string) {
     put(dir, ".affitor/agent-mcp.cjs", AGENT_LAUNCHER);
-    put(dir, "bin/npx", `#!${process.execPath}\nprocess.stdout.write(JSON.stringify({args:process.argv.slice(2),cwd:process.cwd(),key:process.env.AFFITOR_API_KEY,write:process.env.AFFITOR_MCP_WRITE,url:process.env.AFFITOR_API_URL??null}));\n`);
+    put(dir, "bin/npx", `#!${process.execPath}\nprocess.stdout.write(JSON.stringify({args:process.argv.slice(2),cwd:process.cwd(),key:process.env.AFFITOR_API_KEY,write:process.env.AFFITOR_MCP_WRITE,url:process.env.AFFITOR_API_URL??null,aliases:Object.keys(process.env).filter(k=>k.toUpperCase()==="AFFITOR_API_URL"||k.toUpperCase()==="AFFITOR_MCP_WRITE")}));\n`);
     chmodSync(join(dir, "bin/npx"), 0o700);
   }
   it("reads the project program key, pins MCP, fixes cwd and disables inherited money tools", () => {
@@ -180,7 +192,17 @@ describe("real generated launcher without network", () => {
     put(dir, ".affitor/.env", "# fixture only\nexport AFFITOR_API_KEY='fake_program_key'\n");
     const result = launch(dir);
     expect(result.status).toBe(0);
-    expect(JSON.parse(result.stdout)).toEqual({ args: ["-y", "@affitor/mcp@0.2.2"], cwd: dir, key: "fake_program_key", write: "0", url: null });
+    expect(JSON.parse(result.stdout)).toEqual({ args: ["-y", "@affitor/mcp@0.2.2"], cwd: dir, key: "fake_program_key", write: "0", url: null, aliases: ["AFFITOR_MCP_WRITE"] });
+  });
+  it("removes mixed-case API overrides and write aliases before spawning MCP", () => {
+    const dir = project(); install(dir);
+    put(dir, ".affitor/.env", "AFFITOR_API_KEY=fake_file_key");
+    const result = launch(dir, { affitor_api_url: "https://wrong.invalid", Affitor_Api_Url: "https://wrong2.invalid", affitor_mcp_write: "1" });
+    expect(result.status, result.stderr).toBe(0);
+    const child = JSON.parse(result.stdout);
+    expect(child.url).toBe(null);
+    expect(child.write).toBe("0");
+    expect(child.aliases).toEqual(["AFFITOR_MCP_WRITE"]);
   });
   it("prefers an explicitly inherited program key", () => {
     const dir = project(); install(dir);
