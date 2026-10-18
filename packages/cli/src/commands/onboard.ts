@@ -12,6 +12,7 @@ import { detectStack, type Framework } from "../lib/stack-detect.js";
 import { detectPaymentProvider, serverTrackingSnippets } from "../lib/server-tracking.js";
 import { detectStripeWebhook } from "../lib/webhook-detect.js";
 import { injectStripeTrackSale } from "../lib/inject.js";
+import { inspectProjectEnvironment } from "../lib/project-env.js";
 import { runInstallWizard } from "../lib/wizard.js";
 import { DEFAULT_API_URL, type CLIFlags, type ReadinessResult, type TestChainStatus } from "../types.js";
 
@@ -98,10 +99,9 @@ export async function runOnboard(opts: OnboardOpts, flags: CLIFlags) {
 
   // Does Affitor already record this program's Stripe payments (Connect)? Read once, before the
   // wizard, so neither the wizard nor the sale step advises a second, double-counting trackSale.
-  const stripeBinding = provider === "stripe"
+  const stripeAccountBound = provider === "stripe"
     ? await stripeBindingFor(api, cwd, apiKey, flags.json)
-    : { bound: undefined, keyMismatch: false };
-  const stripeAccountBound = stripeBinding.bound;
+    : undefined;
 
   // ── (c) Browser tracking — reuse init's wizard (install @affitor/sdk +
   // inject <AffitorTracker/> via diff-preview+confirm + scaffold lib/affitor.ts).
@@ -121,7 +121,7 @@ export async function runOnboard(opts: OnboardOpts, flags: CLIFlags) {
     cwd,
     framework: stack.framework,
     provider,
-    interactive: interactive && !stripeBinding.keyMismatch,
+    interactive,
     autoConfirm,
     json: flags.json,
     stripeAccountBound,
@@ -201,30 +201,6 @@ export async function readStripeAccountBound(api: Pick<AffitorAPI, "getStatus">)
 }
 
 /**
- * Inspect every standard runtime mode instead of guessing the deployment's NODE_ENV.
- * Next's mode-local layer precedes .env.local; test skips .env.local entirely.
- * Requiring all declared keys to agree is deliberately stricter than any one loader.
- */
-export function envApiKey(cwd: string, expectedKey: string): { envName: string; value?: string; ambiguous?: boolean; conflict: boolean } {
-  const envName = existsSync(join(cwd, ".env.local")) ? ".env.local" : ".env";
-  const names = [".env", ".env.local", ...["production", "development", "test"].flatMap(mode => [`.env.${mode}`, `.env.${mode}.local`])];
-  const layers = names.map(name => {
-    const path = join(cwd, name);
-    const assignments = existsSync(path) ? readFileSync(path, "utf8").split(/\r?\n/)
-      .filter(line => /^\s*(?:export\s+)?AFFITOR_API_KEY\s*=/.test(line)) : [];
-    let value = assignments[0]?.replace(/^\s*(?:export\s+)?AFFITOR_API_KEY\s*=\s*/, "").trim();
-    if (value && ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'")))) value = value.slice(1, -1);
-    return { name, value, ambiguous: assignments.length > 1 };
-  });
-  const target = layers.find(layer => layer.name === envName)!;
-  return {
-    envName, value: target.value, ambiguous: target.ambiguous,
-    conflict: (process.env.AFFITOR_API_KEY !== undefined && process.env.AFFITOR_API_KEY !== expectedKey)
-      || layers.some(layer => layer.ambiguous || (layer.value !== undefined && layer.value !== expectedKey)),
-  };
-}
-
-/**
  * The binding for the program whose key the app will run with. The status call answers for the
  * key passed to onboard; when the env file already holds a different key, the webhook runs as that
  * other program, so the answer does not apply: unknown.
@@ -234,15 +210,15 @@ async function stripeBindingFor(
   cwd: string,
   apiKey: string,
   json: boolean,
-): Promise<{ bound: true | undefined; keyMismatch: boolean }> {
-  const env = envApiKey(cwd, apiKey);
-  if (env.conflict) {
+): Promise<true | undefined> {
+  const env = inspectProjectEnvironment(cwd, apiKey);
+  if (!env.certain) {
     if (!json) {
-      logger.warn(`AFFITOR_API_KEY assignments in process.env or the project env layers conflict with this key. Resolve them for every runtime mode before adding sale tracking.`);
+      logger.warn(`The app runtime key is uncertain (${env.reason}); review all env layers and the program before changing sale tracking.`);
     }
-    return { bound: undefined, keyMismatch: true };
+    return undefined;
   }
-  return { bound: await readStripeAccountBound(api), keyMismatch: false };
+  return readStripeAccountBound(api);
 }
 
 /**
@@ -279,9 +255,11 @@ export async function wireServerSale(args: WireSaleArgs): Promise<OnboardStep> {
   // ask, change nothing.
   let connected: boolean | undefined = args.stripeAccountBound === true ? true : undefined;
   if (connected === undefined && interactive && !autoConfirm && !json) {
-    connected = await confirmAction(
-      "Could Stripe Connect still report sales for this program (including a shared account or delayed events after disconnect)?",
+    const keep = await confirmAction(
+      "Keep the existing webhook unchanged? Choose No only after confirming this app's runtime program key and ruling out current Stripe Connect sales, shared accounts and delayed events after disconnect.",
     );
+    if (keep) return skipSaleForConnect({ cwd, framework, recipe, hook, json, unknown: true });
+    connected = false;
   }
   if (connected !== false) {
     return skipSaleForConnect({ cwd, framework, recipe, hook, json, unknown: connected === undefined });
@@ -462,12 +440,12 @@ function skipSaleForConnect(args: {
     if (tracksSale) {
       logger.warn(
         unknown
-          ? `${hook!.file} calls trackSale. If Stripe is connected in Affitor, remove that call: Affitor already records each payment, so every sale would count twice.`
+          ? `${hook!.file} calls trackSale. It was left unchanged; confirm the runtime program and its Connect sale paths before changing this call.`
           : `${hook!.file} calls trackSale. With Stripe connected, Affitor already records each payment, so remove that call or every sale counts twice.`,
       );
     }
     if (unknown) {
-      printRecipe(recipe, hook, "Review manually: add a sale call only after ruling out current, shared-account and delayed Connect events");
+      printRecipe(recipe, hook, "Keep existing sale tracking; add a call only after confirming the runtime program and ruling out current, shared-account and delayed Connect events");
     } else {
       printRecipe(
         getRecipe(toRecipeFramework(framework), "stripe", "stripe_connect"),
@@ -541,30 +519,19 @@ function writeApiKeyToEnv(
   apiKey: string,
   opts: { autoConfirm: boolean; json: boolean },
 ): OnboardStep {
-  const { envName, value: existingValue, conflict } = envApiKey(cwd, apiKey);
+  const env = inspectProjectEnvironment(cwd, apiKey);
+  const { envName } = env;
   const envPath = join(cwd, envName);
   const line = `AFFITOR_API_KEY=${apiKey}`;
-
-  if (conflict) {
-    if (!opts.json) logger.warn("Project env layers have conflicting or duplicate AFFITOR_API_KEY assignments — resolve them manually. Nothing was changed.");
-    return { step: "env_key", status: "manual", detail: "env layer conflict: existing assignments kept" };
+  if (!env.certain && env.reason !== "no_runtime_key") {
+    if (!opts.json) logger.warn("Project env layers are uncertain — resolve them manually. Nothing was changed.");
+    return { step: "env_key", status: "manual", detail: `env review required: ${env.reason}` };
   }
-  let content = "";
-  if (existsSync(envPath)) {
-    content = readFileSync(envPath, "utf8");
-    if (existingValue !== undefined) {
-      if (existingValue === apiKey) {
-        if (!opts.json) logger.step(`${envName} already has AFFITOR_API_KEY — skipped`);
-        return { step: "env_key", status: "already", detail: envName };
-      }
-      // Different value present — NEVER overwrite a secret. Print a notice.
-      if (!opts.json) {
-        logger.warn(`${envName} already has a different AFFITOR_API_KEY — left unchanged.`);
-        logger.step(`To use this key instead, update AFFITOR_API_KEY in ${envName} manually.`);
-      }
-      return { step: "env_key", status: "manual", detail: `${envName}: existing value kept` };
-    }
+  if (env.hasTargetKey) {
+    if (!opts.json) logger.step(`${envName} already has AFFITOR_API_KEY — skipped`);
+    return { step: "env_key", status: "already", detail: envName };
   }
+  const content = existsSync(envPath) ? readFileSync(envPath, "utf8") : "";
 
   // --json (non-interactive auto) mode never edits files — the no-auto-edit
   // contract. Report it as a manual step (mirrors wireServerSale's json branch)

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, mkdirSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 
@@ -149,14 +149,14 @@ describe("wireServerSale — connection unknown", () => {
     expect(confirmAction).not.toHaveBeenCalled();
   });
 
-  it("interactive, answer yes (connected): no trackSale added", async () => {
+  it("interactive, keep default: unknown remains manual and no trackSale added", async () => {
     const dir = project();
     confirmAction.mockResolvedValueOnce(true);
     const step = await wire(dir, { stripeAccountBound: undefined, interactive: true, autoConfirm: false });
     expect(confirmAction).toHaveBeenCalledTimes(1);
-    expect(confirmAction.mock.calls[0][0]).toContain("Could Stripe Connect still report sales");
+    expect(confirmAction.mock.calls[0][0]).toContain("Keep the existing webhook unchanged?");
     expect(confirmAction.mock.calls[0][0]).toContain("delayed events after disconnect");
-    expect(step.status).toBe("skipped");
+    expect(step.status).toBe("manual");
     expect(webhookOf(dir)).toBe(WEBHOOK);
   });
 
@@ -234,7 +234,7 @@ describe("callsTrackSale", () => {
 const FLAGS = { json: false, noInteractive: false, autoConfirm: false, quiet: false, verbose: false, apiUrl: "http://test.local" };
 
 /** A Fastify + Stripe app the detectors recognise, with the webhook above. */
-function app(env?: string): string {
+function app(env: string | undefined = "AFFITOR_API_KEY=key_a\n"): string {
   const dir = project();
   writeFileSync(join(dir, "package.json"), JSON.stringify({ dependencies: { fastify: "^4.0.0", stripe: "^14.0.0" } }));
   if (env !== undefined) writeFileSync(join(dir, ".env"), env);
@@ -331,11 +331,11 @@ describe("runOnboard reads the binding and passes it on", () => {
   it.each(['AFFITOR_API_KEY=key_b\n', 'export AFFITOR_API_KEY = key_b\n'])('key mismatch stays manual even interactively (%s)', async (env) => {
     apiState.status = { stripe_account_bound: false };
     const dir = app(env);
-    confirmAction.mockResolvedValueOnce(false).mockResolvedValueOnce(true);
+    confirmAction.mockResolvedValueOnce(true);
     await onboardIn(dir, { yes: false });
     expect(webhookOf(dir)).toBe(WEBHOOK);
     expect(readFileSync(join(dir, '.env'), 'utf8')).toBe(env);
-    expect(confirmAction).not.toHaveBeenCalled();
+    expect(confirmAction).toHaveBeenCalledTimes(1);
   });
 
   it.each([
@@ -344,11 +344,11 @@ describe("runOnboard reads the binding and passes it on", () => {
     const env = 'AFFITOR_API_KEY=key_a\nexport AFFITOR_API_KEY = key_b\n';
     const dir = app(env);
     apiState.status = { stripe_account_bound: true };
-    confirmAction.mockResolvedValue(false);
+    confirmAction.mockResolvedValue(true);
     await onboardIn(dir, { yes: false }, flags);
     expect(webhookOf(dir)).toBe(WEBHOOK);
     expect(readFileSync(join(dir, '.env'), 'utf8')).toBe(env);
-    expect(confirmAction).not.toHaveBeenCalled();
+    expect(confirmAction).toHaveBeenCalledTimes(Object.keys(flags).length ? 0 : 1);
     if (flags.json) {
       const summary = JSON.parse(vi.mocked(console.log).mock.calls.at(-1)![0]);
       expect(summary.steps).toContainEqual(expect.objectContaining({ step: 'server_sale', status: 'manual' }));
@@ -392,10 +392,10 @@ describe("runOnboard reads the binding and passes it on", () => {
     const env = 'AFFITOR_API_KEY=key_b\n';
     writeFileSync(join(dir, layer), env);
     apiState.status = { stripe_account_bound: true };
-    confirmAction.mockResolvedValueOnce(false).mockResolvedValueOnce(true);
+    confirmAction.mockResolvedValueOnce(true);
     await onboardIn(dir, { yes: false });
     expect(wizardCalls[0].stripeRecordsSales).toBe('unknown');
-    expect(confirmAction).not.toHaveBeenCalled();
+    expect(confirmAction).toHaveBeenCalledTimes(1);
     expect(webhookOf(dir)).toBe(WEBHOOK);
     expect(readFileSync(join(dir, layer), 'utf8')).toBe(env);
     const output = vi.mocked(console.log).mock.calls.flat().join('\n');
@@ -413,14 +413,116 @@ describe("runOnboard reads the binding and passes it on", () => {
     expect(summary.steps).toContainEqual(expect.objectContaining({ step: 'env_key', status: 'already' }));
   });
 
+  it('colon override asks and defaults to keeping an existing trackSale snippet', async () => {
+    const dir = app();
+    const wired = WEBHOOK.replace('await fulfill(session);', 'await affitor.trackSale({ invoiceId: session.id });');
+    writeFileSync(join(dir, HOOK_FILE), wired);
+    writeFileSync(join(dir, '.env.production.local'), 'AFFITOR_API_KEY: key_b\n');
+    apiState.status = { stripe_account_bound: true };
+    confirmAction.mockResolvedValueOnce(true);
+    await onboardIn(dir, { yes: false });
+    expect(wizardCalls[0].stripeRecordsSales).toBe('unknown');
+    expect(confirmAction).toHaveBeenCalledTimes(1);
+    expect(webhookOf(dir)).toBe(wired);
+    const output = vi.mocked(console.log).mock.calls.flat().join('\n');
+    expect(output).not.toContain('remove that call');
+    expect(output).toContain('left unchanged');
+  });
+
+  it('key-looking text inside a multiline value is not a runtime assignment', async () => {
+    const dir = app('OTHER="begin\nAFFITOR_API_KEY=key_a\nend"\n');
+    apiState.status = { stripe_account_bound: true };
+    confirmAction.mockResolvedValueOnce(true);
+    await onboardIn(dir, { yes: false });
+    expect(wizardCalls[0].stripeRecordsSales).toBe('unknown');
+    expect(confirmAction).toHaveBeenCalledTimes(1);
+    expect(webhookOf(dir)).toBe(WEBHOOK);
+  });
+
+  it('a real colon key outside another multiline value is recognized without a false duplicate', async () => {
+    const dir = app('OTHER="begin\nAFFITOR_API_KEY=key_b\nend"\nAFFITOR_API_KEY: key_a\n');
+    apiState.status = { stripe_account_bound: true };
+    await onboardIn(dir, { yes: false });
+    expect(wizardCalls[0].stripeRecordsSales).toBe(true);
+    expect(confirmAction).not.toHaveBeenCalled();
+  });
+
+  it.each(['missing', 'unknown', 'unreadable'])('uncertain %s env asks once and keeps the webhook', async state => {
+    const dir = app();
+    if (state === 'missing') unlinkSync(join(dir, '.env'));
+    if (state === 'unknown') writeFileSync(join(dir, '.env.staging'), 'AFFITOR_API_KEY=key_a\n');
+    if (state === 'unreadable') chmodSync(join(dir, '.env'), 0);
+    apiState.status = { stripe_account_bound: true };
+    confirmAction.mockResolvedValueOnce(true);
+    try {
+      await onboardIn(dir, { yes: false });
+      expect(wizardCalls[0].stripeRecordsSales).toBe('unknown');
+      expect(confirmAction).toHaveBeenCalledTimes(1);
+      expect(webhookOf(dir)).toBe(WEBHOOK);
+    } finally { if (state === 'unreadable') chmodSync(join(dir, '.env'), 0o600); }
+  });
+
+  it.each([
+    { yes: true, flags: {} }, { yes: false, flags: { json: true } },
+    { yes: false, flags: { noInteractive: true } }, { yes: false, flags: { autoConfirm: true } },
+  ])('ambiguous colon layers never edit existing sale code unattended (%j)', async ({ yes, flags }) => {
+    const dir = app();
+    const wired = WEBHOOK.replace('await fulfill(session);', 'await affitor.trackSale({ invoiceId: session.id });');
+    writeFileSync(join(dir, HOOK_FILE), wired);
+    const env = 'AFFITOR_API_KEY: key_b\n';
+    writeFileSync(join(dir, '.env.production.local'), env);
+    apiState.status = { stripe_account_bound: true };
+    await onboardIn(dir, { yes }, flags);
+    expect(webhookOf(dir)).toBe(wired);
+    expect(readFileSync(join(dir, '.env.production.local'), 'utf8')).toBe(env);
+    expect(readFileSync(join(dir, '.env'), 'utf8')).toBe('AFFITOR_API_KEY=key_a\n');
+    expect(confirmAction).not.toHaveBeenCalled();
+    if (flags.json) {
+      const summary = JSON.parse(vi.mocked(console.log).mock.calls.at(-1)![0]);
+      expect(summary.steps).toContainEqual(expect.objectContaining({ step: 'server_sale', status: 'manual' }));
+      expect(summary.steps).toContainEqual(expect.objectContaining({ step: 'env_key', status: 'manual' }));
+    }
+  });
+
+  it('conflicting layers can enter the manual path only after explicit review and a separate diff approval', async () => {
+    const dir = app();
+    writeFileSync(join(dir, '.env.production.local'), 'AFFITOR_API_KEY: key_b\n');
+    apiState.status = { stripe_account_bound: true };
+    confirmAction.mockResolvedValueOnce(false).mockResolvedValueOnce(true);
+    await onboardIn(dir, { yes: false });
+    expect(wizardCalls[0].stripeRecordsSales).toBe('unknown');
+    expect(confirmAction).toHaveBeenCalledTimes(2);
+    expect(confirmAction.mock.calls[0][0]).toContain('runtime program key');
+    expect(confirmAction.mock.calls[1][0]).toContain('Apply this change');
+    expect(webhookOf(dir)).toContain('await affitor.trackSale({');
+    expect(readFileSync(join(dir, '.env.production.local'), 'utf8')).toBe('AFFITOR_API_KEY: key_b\n');
+    expect(readFileSync(join(dir, '.env'), 'utf8')).toBe('AFFITOR_API_KEY=key_a\n');
+  });
+
+  it.each([
+    'AFFITOR_API_KEY=key_a\nAFFITOR_API_KEY: key_a\n',
+    'AFFITOR_API_KEY=key_a\nAFFITOR_API_KEY: key_b\n',
+    'AFFITOR_API_KEY="$OTHER_KEY"\n',
+    "AFFITOR_API_KEY=`key_a`\nAFFITOR_API_KEY=key_a\n",
+  ])('ambiguous assignments stay unknown and ask (%s)', async env => {
+    const dir = app(env);
+    apiState.status = { stripe_account_bound: true };
+    confirmAction.mockResolvedValueOnce(true);
+    await onboardIn(dir, { yes: false });
+    expect(wizardCalls[0].stripeRecordsSales).toBe('unknown');
+    expect(confirmAction).toHaveBeenCalledTimes(1);
+    expect(readFileSync(join(dir, '.env'), 'utf8')).toBe(env);
+    expect(webhookOf(dir)).toBe(WEBHOOK);
+  });
+
   it.each(['key_b', ''])('a runtime process key conflict (%j) cannot be overridden by answering the Connect question', async processKey => {
     vi.stubEnv('AFFITOR_API_KEY', processKey);
     apiState.status = { stripe_account_bound: false };
     const dir = app();
-    confirmAction.mockResolvedValueOnce(false).mockResolvedValueOnce(true);
+    confirmAction.mockResolvedValueOnce(true);
     await onboardIn(dir, { yes: false });
     expect(webhookOf(dir)).toBe(WEBHOOK);
-    expect(confirmAction).not.toHaveBeenCalled();
+    expect(confirmAction).toHaveBeenCalledTimes(1);
   });
 
   it.each([undefined, 'AFFITOR_API_KEY=key_b\n'])('never prints a full program key in the env diff or conflict advice', async (env) => {
