@@ -14,6 +14,11 @@
  * not be able to create a real sale or reverse a commission by accident. Every
  * tool carries MCP annotations so clients can ask before a write.
  *
+ * The coupon tools (`affitor_create_coupon`, `affitor_lock_coupon`,
+ * `affitor_get_coupon`) are a separate family: they use only `AFFITOR_AGENT_KEY`
+ * and are registered only when `AFFITOR_MCP_COUPONS=1`. Either family can run
+ * without the other's key.
+ *
  *   {
  *     "mcpServers": {
  *       "affitor": {
@@ -424,6 +429,201 @@ function registerWriteTools(server: McpServer, affitor: AffitorLike, trackTestSa
   );
 }
 
+/** One coupon API call: the route, an optional JSON body and the caller's Idempotency-Key. */
+export interface CouponRequest {
+  method: 'GET' | 'POST';
+  path: string;
+  body?: Record<string, unknown>;
+  idempotencyKey?: string;
+}
+
+/** The HTTP status, the parsed JSON body (null if none) and the Retry-After header if sent. */
+export interface CouponResponse {
+  status: number;
+  body: unknown;
+  retryAfter?: string;
+}
+
+/** Sends one coupon API call. Injected into `registerCouponTools` so it stays unit-testable. */
+export type CouponClient = (request: CouponRequest) => Promise<CouponResponse>;
+
+/**
+ * A coupon client bound to the agent key (`AFFITOR_AGENT_KEY`) and the API base.
+ * It never sees the program key, and the Idempotency-Key goes only in the header.
+ */
+export function createCouponClient(agentKey: string, apiUrl: string): CouponClient {
+  return async ({ method, path, body, idempotencyKey }) => {
+    const headers: Record<string, string> = { Authorization: `Bearer ${agentKey}`, Accept: 'application/json' };
+    if (body) headers['Content-Type'] = 'application/json';
+    if (idempotencyKey) headers['Idempotency-Key'] = idempotencyKey;
+    const res = await fetch(`${apiUrl}${path}`, { method, headers, ...(body ? { body: JSON.stringify(body) } : {}) });
+    const parsed: unknown = await res.json().catch(() => null);
+    const retryAfter = res.headers.get('Retry-After');
+    return { status: res.status, body: parsed, ...(retryAfter ? { retryAfter } : {}) };
+  };
+}
+
+const PENDING_STATUSES = new Set(['pending', 'held', 'lock_pending']);
+const SAME_KEY_HINT =
+  'Retry only with the same idempotency_key and the same payload. A 409 means an existing or pending assignment for that link, a stale version, or a key already used with another payload; it is never a reason to try a new key.';
+
+/**
+ * Map a coupon API response to an MCP result. A 2xx body is returned as JSON text;
+ * a 202 or a pending/held/lock_pending body is marked pending (not an error, not an
+ * active code). Any other status becomes an error carrying only the HTTP status, the
+ * API's stable error.code and retry info: no API message, request args or key.
+ */
+function couponResult(res: CouponResponse): CallToolResult {
+  const body = (res.body && typeof res.body === 'object' ? res.body : {}) as Record<string, unknown>;
+  const data = body.data as { status?: unknown } | undefined;
+  if (res.status === 202 || (res.status >= 200 && res.status < 300 && PENDING_STATUSES.has(String(data?.status)))) {
+    return ok({
+      pending: true,
+      http_status: res.status,
+      next_action: 'Not an active code yet. Poll affitor_get_coupon with this coupon_id; do not send a new create or lock.',
+      ...body,
+    });
+  }
+  if (res.status >= 200 && res.status < 300) return ok(res.body);
+
+  const error = body.error as { code?: unknown; retry_after_seconds?: unknown } | undefined;
+  const code = typeof error?.code === 'string' && /^[a-z0-9_]{1,64}$/.test(error.code) ? error.code : 'unknown_error';
+  const retryAfter = typeof error?.retry_after_seconds === 'number' ? error.retry_after_seconds : Number(res.retryAfter);
+  return {
+    content: [
+      {
+        type: 'text',
+        text: asText({
+          http_status: res.status,
+          error_code: code,
+          ...(Number.isFinite(retryAfter) ? { retry_after_seconds: retryAfter } : {}),
+          ...(res.status === 409 ? { hint: SAME_KEY_HINT } : {}),
+        }),
+      },
+    ],
+    isError: true,
+  };
+}
+
+/** Run a coupon call; a network failure becomes a generic error with no request details. */
+async function runCouponCall(client: CouponClient, request: CouponRequest): Promise<CallToolResult> {
+  try {
+    return couponResult(await client(request));
+  } catch {
+    return fail(asText({ error_code: 'request_failed', ...(request.idempotencyKey ? { hint: SAME_KEY_HINT } : {}) }));
+  }
+}
+
+// v1 resource ids: positive integers of 1..10 digits.
+const v1Id = () => z.number().int().min(1).max(9_999_999_999);
+const safePositiveInt = () => z.number().int().positive().max(Number.MAX_SAFE_INTEGER);
+const idempotencyKey = () =>
+  z
+    .string()
+    .regex(/^[A-Za-z0-9:_-]{8,128}$/)
+    .describe(
+      'A key you choose for this one request, 8 to 128 of A-Z a-z 0-9 : _ -, such as cpn_link82_v1. Sent as the Idempotency-Key header. Keep it, and on any retry send the same key with the same payload.',
+    );
+
+/**
+ * Register the coupon tools (create, lock, get) on an MCP server. They act only in
+ * the program of the agent key behind `couponClient`; no tool takes a program,
+ * account, key or permission argument. Every input object is strict.
+ */
+export function registerCouponTools(server: McpServer, couponClient: CouponClient): void {
+  server.registerTool(
+    'affitor_create_coupon',
+    {
+      description:
+        "Create a one-time discount code for one partner's referral link in this agent key's program. Use it when a partner needs a coupon for their link. Retry with the same idempotency_key and the same payload. HTTP 409 means the link has an existing or pending coupon, or the key was used with another payload; never try a new key. Returns the coupon status; pending means poll affitor_get_coupon.",
+      inputSchema: z
+        .object({
+          partner_program_id: v1Id().describe("The partner's enrollment id in this program, from Affitor. It must own referral_link_id."),
+          referral_link_id: v1Id().describe("The id of the partner's referral link the code is tied to, from Affitor. A link holds at most one coupon."),
+          product_id: z
+            .string()
+            .min(1)
+            .describe("The program's catalogue key for the product the discount applies to, such as replay. Affitor maps it to the real product; never a Stripe prod_ or price_ id."),
+          discount: z
+            .discriminatedUnion('kind', [
+              z
+                .object({
+                  kind: z.literal('percent'),
+                  percent_off_bps: z.number().int().min(1).max(10000).describe('The percent off in basis points, 1 to 10000, such as 1000 for 10%.'),
+                  duration: z.literal('once').describe('Always once: the discount applies to one checkout.'),
+                })
+                .strict(),
+              z
+                .object({
+                  kind: z.literal('fixed'),
+                  amount_off_minor: safePositiveInt().describe('The amount off in cents, such as 500 for $5.00.'),
+                  currency: z.literal('usd').describe('Always usd.'),
+                  duration: z.literal('once').describe('Always once: the discount applies to one checkout.'),
+                })
+                .strict(),
+            ])
+            .describe('Exactly one discount: kind percent with percent_off_bps, or kind fixed with amount_off_minor and currency usd.'),
+          prefix: z
+            .string()
+            .regex(/^[A-Za-z0-9]{0,12}$/)
+            .optional()
+            .describe('Up to 12 letters or digits that start the code, such as BTO. Leave it out for the default prefix.'),
+          max_redemptions: safePositiveInt()
+            .optional()
+            .describe('How many checkouts may use the code in total. Leave it out for no redemption limit.'),
+          expires_at: z
+            .string()
+            .datetime()
+            .optional()
+            .describe('When the code stops working, a future UTC ISO time such as 2026-11-30T00:00:00Z. Leave it out for no expiry.'),
+          idempotency_key: idempotencyKey(),
+        })
+        .strict(),
+      annotations: { title: 'Create a coupon', readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: true },
+    },
+    async ({ idempotency_key, ...body }) =>
+      runCouponCall(couponClient, { method: 'POST', path: '/api/v1/coupons', body, idempotencyKey: idempotency_key }),
+  );
+
+  server.registerTool(
+    'affitor_lock_coupon',
+    {
+      description:
+        'Stop new redemptions of one coupon code. It does not delete the coupon, undo discounts already applied or refund anyone. Retry with the same idempotency_key and the same payload. HTTP 409 means a stale expected_version, an existing or pending assignment, or the key was used with another payload; never try a new key. Returns the coupon status; lock_pending means poll affitor_get_coupon.',
+      inputSchema: z
+        .object({
+          coupon_id: v1Id().describe('The coupon_id returned by affitor_create_coupon or affitor_get_coupon.'),
+          expected_version: safePositiveInt().describe('The version from the latest affitor_get_coupon or create result. A stale version answers 409.'),
+          idempotency_key: idempotencyKey(),
+        })
+        .strict(),
+      annotations: { title: 'Lock a coupon', readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: true },
+    },
+    async ({ coupon_id, expected_version, idempotency_key }) =>
+      runCouponCall(couponClient, {
+        method: 'POST',
+        path: `/api/v1/coupons/${coupon_id}/lock`,
+        body: { expected_version },
+        idempotencyKey: idempotency_key,
+      }),
+  );
+
+  server.registerTool(
+    'affitor_get_coupon',
+    {
+      description:
+        "Read one coupon's status (pending, active, lock_pending, locked, held or failed), version and, once active, its code. Use it to poll after create or lock answers pending, instead of calling them again. Returns the coupon status from the API; a code works only when status is active.",
+      inputSchema: z
+        .object({
+          coupon_id: v1Id().describe('The coupon_id returned by affitor_create_coupon.'),
+        })
+        .strict(),
+      annotations: { title: 'Get a coupon', readOnlyHint: true, openWorldHint: true },
+    },
+    async ({ coupon_id }) => runCouponCall(couponClient, { method: 'GET', path: `/api/v1/coupons/${coupon_id}` }),
+  );
+}
+
 /** Read the server version from this package's package.json at runtime. */
 function readVersion(): string {
   try {
@@ -439,31 +639,41 @@ function readVersion(): string {
 const SERVER_VERSION = readVersion();
 
 async function main(): Promise<void> {
+  // Two independent families, each with its own key; neither key ever falls back to the other.
   const apiKey = process.env.AFFITOR_API_KEY;
-  if (!apiKey) {
+  const agentKey = process.env.AFFITOR_AGENT_KEY;
+  const couponsOn = process.env.AFFITOR_MCP_COUPONS === '1';
+  if (!apiKey && !(agentKey && couponsOn)) {
     process.stderr.write(
-      '@affitor/mcp: AFFITOR_API_KEY is required. Set it in your MCP client config, e.g.\n' +
+      '@affitor/mcp: set AFFITOR_API_KEY (program key, tracking tools), or AFFITOR_AGENT_KEY with AFFITOR_MCP_COUPONS=1 (coupon tools), in your MCP client config, e.g.\n' +
         '  "env": { "AFFITOR_API_KEY": "your_program_key" }\n',
     );
     process.exit(1);
   }
+  if (couponsOn && !agentKey) {
+    process.stderr.write('@affitor/mcp: AFFITOR_MCP_COUPONS=1 needs AFFITOR_AGENT_KEY; coupon tools are not added.\n');
+  }
 
   const apiUrl = process.env.AFFITOR_API_URL;
-  const affitor = new Affitor({ apiKey, ...(apiUrl ? { apiUrl } : {}) });
-
-  // Chain-firing isn't exposed by the SDK client (its `post` is private), so we
-  // fire the endpoint via a small authenticated fetch — injected for testability.
-  const runVerification: RunVerification = () =>
-    fireVerificationChain(apiKey, apiUrl ?? 'https://api.affitor.com');
-
-  // AFFITOR_MCP_WRITE=1 registers the tools that move money (track_sale, track_refund).
-
   const baseUrl = apiUrl ?? 'https://api.affitor.com';
   const server = new McpServer({ name: 'affitor', version: SERVER_VERSION });
-  registerTools(server, affitor, runVerification, {
-    allowWrites: process.env.AFFITOR_MCP_WRITE === '1',
-    trackTestSale: (input) => postTestSale(apiKey, baseUrl, input),
-  });
+
+  if (apiKey) {
+    const affitor = new Affitor({ apiKey, ...(apiUrl ? { apiUrl } : {}) });
+
+    // Chain-firing isn't exposed by the SDK client (its `post` is private), so we
+    // fire the endpoint via a small authenticated fetch, injected for testability.
+    const runVerification: RunVerification = () => fireVerificationChain(apiKey, baseUrl);
+
+    // AFFITOR_MCP_WRITE=1 registers the tools that move money (track_sale, track_refund).
+    registerTools(server, affitor, runVerification, {
+      allowWrites: process.env.AFFITOR_MCP_WRITE === '1',
+      trackTestSale: (input) => postTestSale(apiKey, baseUrl, input),
+    });
+  }
+
+  // AFFITOR_MCP_COUPONS=1 with AFFITOR_AGENT_KEY registers the coupon tools.
+  if (agentKey && couponsOn) registerCouponTools(server, createCouponClient(agentKey, baseUrl));
 
   const transport = new StdioServerTransport();
   await server.connect(transport);

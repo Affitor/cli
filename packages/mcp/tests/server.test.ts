@@ -1,12 +1,22 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { fileURLToPath } from 'node:url';
+import { readFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
 import { dirname, resolve } from 'node:path';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { Affitor } from '@affitor/sdk/server';
-import { registerTools, postTestSale, type AffitorLike } from '../src/index.js';
+import {
+  registerTools,
+  registerCouponTools,
+  createCouponClient,
+  postTestSale,
+  type AffitorLike,
+  type CouponClient,
+  type CouponRequest,
+} from '../src/index.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SERVER_ENTRY = resolve(__dirname, '../dist/index.js');
@@ -484,5 +494,322 @@ describe('@affitor/mcp idempotency keys', () => {
     expect(res.isError).toBe(true);
     expect(calls).toEqual({ trackSale: 0, trackRefund: 0, trackTestSale: 0 });
     await client.close();
+  });
+});
+
+// ── 5. Coupon tools: separate key, separate flag, strict inputs ──
+const COUPON_TOOLS = ['affitor_create_coupon', 'affitor_lock_coupon', 'affitor_get_coupon'] as const;
+const sorted = (names: readonly string[]) => [...names].sort();
+
+async function spawnedTools(env: Record<string, string>): Promise<string[]> {
+  const transport = new StdioClientTransport({
+    command: process.execPath,
+    args: [SERVER_ENTRY],
+    env: { AFFITOR_API_URL: 'http://127.0.0.1:1', ...env },
+    stderr: 'ignore',
+  });
+  const client = new Client({ name: 'test-client', version: '0.0.0' });
+  await client.connect(transport);
+  try {
+    return (await client.listTools()).tools.map((t) => t.name).sort();
+  } finally {
+    await client.close();
+  }
+}
+
+function spawnedExit(env: Record<string, string>) {
+  return spawnSync(process.execPath, [SERVER_ENTRY], { env, input: '', encoding: 'utf8', timeout: 10000 });
+}
+
+describe('@affitor/mcp tool families by configuration (spawned, built dist)', () => {
+  it.each([
+    ['program key only, WRITE off', { AFFITOR_API_KEY: 'prog_k' }, DEFAULT_TOOLS],
+    ['program key only, WRITE on (COUPONS=1 without agent key)', { AFFITOR_API_KEY: 'prog_k', AFFITOR_MCP_WRITE: '1', AFFITOR_MCP_COUPONS: '1' }, [...DEFAULT_TOOLS, ...WRITE_TOOLS]],
+    ['agent key only, COUPONS=1', { AFFITOR_AGENT_KEY: 'agt_k', AFFITOR_MCP_COUPONS: '1' }, COUPON_TOOLS],
+    ['agent key only, COUPONS=1, WRITE=1 (no program client)', { AFFITOR_AGENT_KEY: 'agt_k', AFFITOR_MCP_COUPONS: '1', AFFITOR_MCP_WRITE: '1' }, COUPON_TOOLS],
+    ['both keys, COUPONS=1, WRITE off', { AFFITOR_API_KEY: 'prog_k', AFFITOR_AGENT_KEY: 'agt_k', AFFITOR_MCP_COUPONS: '1' }, [...DEFAULT_TOOLS, ...COUPON_TOOLS]],
+    ['both keys, both flags on', { AFFITOR_API_KEY: 'prog_k', AFFITOR_AGENT_KEY: 'agt_k', AFFITOR_MCP_COUPONS: '1', AFFITOR_MCP_WRITE: '1' }, [...DEFAULT_TOOLS, ...WRITE_TOOLS, ...COUPON_TOOLS]],
+    ['both keys, COUPONS off', { AFFITOR_API_KEY: 'prog_k', AFFITOR_AGENT_KEY: 'agt_k' }, DEFAULT_TOOLS],
+    ['missing coupon key, program key present, COUPONS=1', { AFFITOR_API_KEY: 'prog_k', AFFITOR_MCP_COUPONS: '1' }, DEFAULT_TOOLS],
+  ] as const)('%s', async (_label, env, expected) => {
+    expect(await spawnedTools(env)).toEqual(sorted(expected));
+  }, 20000);
+
+  it.each([
+    ['agent key only, COUPONS off', { AFFITOR_AGENT_KEY: 'agt_secret_value' }],
+    ['agent key only, COUPONS off, WRITE=1', { AFFITOR_AGENT_KEY: 'agt_secret_value', AFFITOR_MCP_WRITE: '1' }],
+    ['missing coupon key, no program key, COUPONS=1', { AFFITOR_MCP_COUPONS: '1' }],
+    ['nothing set', {}],
+  ] as const)('%s: no tools, exits with a setup hint naming both keys', (_label, env) => {
+    const out = spawnedExit(env);
+    expect(out.status).toBe(1);
+    expect(out.stderr).toContain('AFFITOR_API_KEY');
+    expect(out.stderr).toContain('AFFITOR_AGENT_KEY');
+    expect(out.stderr).not.toContain('agt_secret_value');
+  });
+
+  it('coupon tools carry the required annotations and short descriptions', async () => {
+    const transport = new StdioClientTransport({
+      command: process.execPath,
+      args: [SERVER_ENTRY],
+      env: { AFFITOR_AGENT_KEY: 'agt_k', AFFITOR_MCP_COUPONS: '1', AFFITOR_API_URL: 'http://127.0.0.1:1' },
+    });
+    const client = new Client({ name: 'test-client', version: '0.0.0' });
+    await client.connect(transport);
+    const { tools } = await client.listTools();
+    await client.close();
+    const byName = Object.fromEntries(tools.map((t) => [t.name, t]));
+    for (const name of ['affitor_create_coupon', 'affitor_lock_coupon']) {
+      expect(byName[name].annotations).toMatchObject({ readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: true });
+      expect(byName[name].description).toContain('same idempotency_key and the same payload');
+      expect(byName[name].description).toContain('409');
+      expect(byName[name].description).toMatch(/never try a new key/);
+    }
+    expect(byName.affitor_get_coupon.annotations).toMatchObject({ readOnlyHint: true, openWorldHint: true });
+    for (const name of COUPON_TOOLS) {
+      const tool = byName[name];
+      expect(tool.description!.length, `${name} description length`).toBeLessThanOrEqual(400);
+      expect(tool.description).not.toContain('—');
+      expect(tool.inputSchema.additionalProperties).toBe(false);
+      const props = tool.inputSchema.properties as Record<string, { description?: string }>;
+      for (const [key, prop] of Object.entries(props)) expect(prop.description, `${name}.${key} description`).toBeTruthy();
+      for (const banned of ['program_id', 'account_id', 'api_key', 'agent_key', 'actor', 'permission', 'scope']) {
+        expect(Object.keys(props)).not.toContain(banned);
+      }
+    }
+    expect(byName.affitor_create_coupon.inputSchema.required).toEqual(
+      expect.arrayContaining(['partner_program_id', 'referral_link_id', 'product_id', 'discount', 'idempotency_key']),
+    );
+  }, 20000);
+});
+
+describe('@affitor/mcp coupon tools → wire contract (mocked fetch)', () => {
+  const CREATE_ARGS = {
+    partner_program_id: 31,
+    referral_link_id: 82,
+    product_id: 'replay',
+    discount: { kind: 'percent', percent_off_bps: 1000, duration: 'once' },
+    prefix: 'BTO',
+    max_redemptions: 20,
+    expires_at: '2026-11-30T00:00:00Z',
+    idempotency_key: 'cpn_link82_v1',
+  };
+  const activeBody = { data: { coupon_id: 501, program_id: 1115, status: 'active', version: 1, code: 'BTO10ABC', tracking_ready: true } };
+
+  async function withFetch(
+    respond: (url: string, init: RequestInit) => Response,
+    run: (client: Client) => Promise<void>,
+  ): Promise<{ url: string; init: RequestInit }[]> {
+    const calls: { url: string; init: RequestInit }[] = [];
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = (async (url: string, init: RequestInit) => {
+      calls.push({ url: String(url), init });
+      return respond(String(url), init);
+    }) as unknown as typeof fetch;
+    const server = new McpServer({ name: 'affitor', version: '0.1.0' });
+    registerCouponTools(server, createCouponClient('agt_secret', 'https://api.affitor.com'));
+    const [ct, st] = InMemoryTransport.createLinkedPair();
+    const client = new Client({ name: 'test', version: '0.0.0' });
+    await Promise.all([server.connect(st), client.connect(ct)]);
+    try {
+      await run(client);
+    } finally {
+      globalThis.fetch = realFetch;
+      await client.close();
+    }
+    return calls;
+  }
+
+  const json = (status: number, body: unknown, headers: Record<string, string> = {}) =>
+    new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json', ...headers } });
+  const text = (res: unknown) => (res as { content: { text: string }[] }).content[0].text;
+  const call = (client: Client, name: string, args: Record<string, unknown>) =>
+    client
+      .callTool({ name, arguments: args })
+      .catch((err: Error) => ({ isError: true, content: [{ type: 'text', text: err.message }] }));
+
+  it('create sends Idempotency-Key from idempotency_key, the agent key only, and a body without idempotency_key', async () => {
+    let res: unknown;
+    const calls = await withFetch(() => json(201, activeBody), async (client) => {
+      res = await call(client, 'affitor_create_coupon', CREATE_ARGS);
+    });
+    expect((res as { isError?: boolean }).isError).toBeFalsy();
+    expect(JSON.parse(text(res))).toEqual(activeBody);
+    expect(calls).toHaveLength(1);
+    const [{ url, init }] = calls;
+    expect(url).toBe('https://api.affitor.com/api/v1/coupons');
+    expect(init.method).toBe('POST');
+    const headers = init.headers as Record<string, string>;
+    expect(headers.Authorization).toBe('Bearer agt_secret');
+    expect(headers['Idempotency-Key']).toBe('cpn_link82_v1');
+    const { idempotency_key: _omit, ...expectedBody } = CREATE_ARGS;
+    expect(JSON.parse(String(init.body))).toEqual(expectedBody);
+  });
+
+  it('lock posts expected_version only, with the Idempotency-Key header', async () => {
+    const calls = await withFetch(() => json(200, { data: { ...activeBody.data, status: 'locked', version: 2 } }), async (client) => {
+      const res = await call(client, 'affitor_lock_coupon', { coupon_id: 501, expected_version: 1, idempotency_key: 'lock_501_v1' });
+      expect(res.isError).toBeFalsy();
+    });
+    expect(calls).toHaveLength(1);
+    expect(calls[0].url).toBe('https://api.affitor.com/api/v1/coupons/501/lock');
+    expect(calls[0].init.method).toBe('POST');
+    expect((calls[0].init.headers as Record<string, string>)['Idempotency-Key']).toBe('lock_501_v1');
+    expect((calls[0].init.headers as Record<string, string>).Authorization).toBe('Bearer agt_secret');
+    expect(JSON.parse(String(calls[0].init.body))).toEqual({ expected_version: 1 });
+  });
+
+  it('get sends GET with no body and no Idempotency-Key', async () => {
+    const calls = await withFetch(() => json(200, activeBody), async (client) => {
+      const res = await call(client, 'affitor_get_coupon', { coupon_id: 501 });
+      expect(res.isError).toBeFalsy();
+      expect(JSON.parse(text(res))).toEqual(activeBody);
+    });
+    expect(calls).toHaveLength(1);
+    expect(calls[0].url).toBe('https://api.affitor.com/api/v1/coupons/501');
+    expect(calls[0].init.method).toBe('GET');
+    expect(calls[0].init.body).toBeUndefined();
+    expect('Idempotency-Key' in (calls[0].init.headers as Record<string, string>)).toBe(false);
+  });
+
+  it('a 202 pending body is a non-error pending result, never an active code', async () => {
+    const pendingBody = { data: { coupon_id: 501, program_id: 1115, status: 'pending', version: 1, code: null, tracking_ready: false, reason: 'provider_confirmation_pending', status_url: '/api/v1/coupons/501' } };
+    await withFetch(() => json(202, pendingBody), async (client) => {
+      const res = await call(client, 'affitor_create_coupon', CREATE_ARGS);
+      expect(res.isError).toBeFalsy();
+      const out = JSON.parse(text(res));
+      expect(out).toMatchObject({ pending: true, http_status: 202, data: pendingBody.data });
+      expect(out.next_action).toContain('affitor_get_coupon');
+      expect(out.next_action).toContain('Not an active code');
+    });
+  });
+
+  it('a 200 get with status held is marked pending, not an error', async () => {
+    await withFetch(() => json(200, { data: { coupon_id: 501, status: 'held', code: null } }), async (client) => {
+      const res = await call(client, 'affitor_get_coupon', { coupon_id: 501 });
+      expect(res.isError).toBeFalsy();
+      expect(JSON.parse(text(res))).toMatchObject({ pending: true, http_status: 200 });
+    });
+  });
+
+  it.each([
+    [409, 'idempotency_conflict', true],
+    [403, 'insufficient_scope', false],
+    [404, 'not_found', false],
+    [401, 'unauthorized', false],
+  ])('HTTP %i returns isError with only the status and error.code', async (status, code, hint) => {
+    await withFetch(
+      () => json(status, { error: { code, message: 'raw provider text sk_live_leak', details: { args: CREATE_ARGS } } }),
+      async (client) => {
+        const res = await call(client, 'affitor_create_coupon', CREATE_ARGS);
+        expect(res.isError).toBe(true);
+        const out = JSON.parse(text(res));
+        expect(out.http_status).toBe(status);
+        expect(out.error_code).toBe(code);
+        expect(Object.keys(out).sort()).toEqual(hint ? ['error_code', 'hint', 'http_status'] : ['error_code', 'http_status']);
+        if (hint) expect(out.hint).toContain('same idempotency_key and the same payload');
+        const raw = text(res);
+        for (const leak of ['sk_live_leak', 'raw provider text', 'agt_secret', 'cpn_link82_v1', 'replay']) expect(raw).not.toContain(leak);
+      },
+    );
+  });
+
+  it('a 429 keeps retry info from Retry-After', async () => {
+    await withFetch(() => json(429, { error: { code: 'rate_limited' } }, { 'Retry-After': '30' }), async (client) => {
+      const res = await call(client, 'affitor_get_coupon', { coupon_id: 501 });
+      expect(res.isError).toBe(true);
+      expect(JSON.parse(text(res))).toEqual({ http_status: 429, error_code: 'rate_limited', retry_after_seconds: 30 });
+    });
+  });
+
+  it.each([
+    ['an extra program_id', { ...CREATE_ARGS, program_id: 1115 }],
+    ['an extra api_key', { ...CREATE_ARGS, api_key: 'x' }],
+    ['a mixed discount variant', { ...CREATE_ARGS, discount: { kind: 'percent', percent_off_bps: 1000, amount_off_minor: 500, duration: 'once' } }],
+    ['a fixed discount in eur', { ...CREATE_ARGS, discount: { kind: 'fixed', amount_off_minor: 500, currency: 'eur', duration: 'once' } }],
+    ['a float percent', { ...CREATE_ARGS, discount: { kind: 'percent', percent_off_bps: 10.5, duration: 'once' } }],
+    ['a forever duration', { ...CREATE_ARGS, discount: { kind: 'percent', percent_off_bps: 1000, duration: 'forever' } }],
+    ['an 11-digit id', { ...CREATE_ARGS, referral_link_id: 12345678901 }],
+    ['a short idempotency_key', { ...CREATE_ARGS, idempotency_key: 'short' }],
+    ['a 13-char prefix', { ...CREATE_ARGS, prefix: 'ABCDEFGHIJKLM' }],
+    ['no idempotency_key', (({ idempotency_key: _k, ...rest }) => rest)(CREATE_ARGS)],
+  ])('create rejects %s before any call', async (_label, args) => {
+    const calls = await withFetch(() => json(201, activeBody), async (client) => {
+      const res = await call(client, 'affitor_create_coupon', args as Record<string, unknown>);
+      expect(res.isError).toBe(true);
+    });
+    expect(calls).toHaveLength(0);
+  });
+
+  it.each([
+    ['affitor_lock_coupon', { coupon_id: 501, expected_version: 1, idempotency_key: 'lock_501_v1', program_id: 1 }],
+    ['affitor_lock_coupon', { coupon_id: 501, expected_version: 0, idempotency_key: 'lock_501_v1' }],
+    ['affitor_get_coupon', { coupon_id: 501, program_id: 1 }],
+    ['affitor_get_coupon', { coupon_id: 0 }],
+  ])('%s rejects %j before any call', async (name, args) => {
+    const calls = await withFetch(() => json(200, activeBody), async (client) => {
+      const res = await call(client, name, args);
+      expect(res.isError).toBe(true);
+    });
+    expect(calls).toHaveLength(0);
+  });
+
+  it('registerCouponTools uses only the injected client and registers exactly the coupon tools', async () => {
+    const seen: CouponRequest[] = [];
+    const stub: CouponClient = async (request) => {
+      seen.push(request);
+      return { status: 200, body: activeBody };
+    };
+    const server = new McpServer({ name: 'affitor', version: '0.1.0' });
+    registerCouponTools(server, stub);
+    const [ct, st] = InMemoryTransport.createLinkedPair();
+    const client = new Client({ name: 'test', version: '0.0.0' });
+    await Promise.all([server.connect(st), client.connect(ct)]);
+    expect((await client.listTools()).tools.map((t) => t.name).sort()).toEqual(sorted(COUPON_TOOLS));
+    await client.callTool({ name: 'affitor_lock_coupon', arguments: { coupon_id: 7, expected_version: 3, idempotency_key: 'lock_7_v3_ab' } });
+    expect(seen).toEqual([{ method: 'POST', path: '/api/v1/coupons/7/lock', body: { expected_version: 3 }, idempotencyKey: 'lock_7_v3_ab' }]);
+    await client.close();
+  });
+});
+
+describe('@affitor/mcp public surface and registry metadata', () => {
+  const pkg = JSON.parse(readFileSync(resolve(__dirname, '../package.json'), 'utf8'));
+  const serverJson = JSON.parse(readFileSync(resolve(__dirname, '../server.json'), 'utf8'));
+  const npmEntry = serverJson.packages.find((p: { registryType: string }) => p.registryType === 'npm');
+  const env = Object.fromEntries(npmEntry.environmentVariables.map((v: { name: string }) => [v.name, v]));
+
+  it('registerTools keeps its (server, affitor, runVerification?, options?) shape and registers no coupon tools', async () => {
+    expect(registerTools.length).toBe(3);
+    const stub: AffitorLike = {
+      readiness: async () => ({}) as never,
+      trackLead: async () => ({ ok: true, status: 200, data: null }),
+      trackSale: async () => ({ ok: true, status: 200, data: null }),
+      trackRefund: async () => ({ ok: true, status: 200, data: null }),
+      trackClick: async () => ({ ok: true, status: 200, data: null }),
+    };
+    const server = new McpServer({ name: 'affitor', version: '0.1.0' });
+    registerTools(server, stub, undefined, { allowWrites: true });
+    const [ct, st] = InMemoryTransport.createLinkedPair();
+    const client = new Client({ name: 'test', version: '0.0.0' });
+    await Promise.all([server.connect(st), client.connect(ct)]);
+    expect((await client.listTools()).tools.map((t) => t.name).sort()).toEqual(sorted([...DEFAULT_TOOLS, ...WRITE_TOOLS]));
+    await client.close();
+  });
+
+  it('server.json npm version equals package.json version, and server.json ships in the package', () => {
+    expect(npmEntry.identifier).toBe(pkg.name);
+    expect(npmEntry.version).toBe(pkg.version);
+    expect(pkg.files).toContain('server.json');
+  });
+
+  it('server.json lists the env vars with the right required/secret flags', () => {
+    expect(env.AFFITOR_API_KEY).toMatchObject({ isRequired: false, isSecret: true });
+    expect(env.AFFITOR_AGENT_KEY).toMatchObject({ isRequired: false, isSecret: true });
+    expect(env.AFFITOR_AGENT_KEY.description).toBeTruthy();
+    expect(env.AFFITOR_MCP_COUPONS).toMatchObject({ isRequired: false });
+    expect(env.AFFITOR_MCP_COUPONS.description).toMatch(/1/);
+    expect(env.AFFITOR_MCP_COUPONS.description).toMatch(/[Oo]ff by default/);
+    expect(env.AFFITOR_MCP_WRITE).toMatchObject({ isRequired: false });
+    expect(env.AFFITOR_API_URL).toMatchObject({ isRequired: false });
   });
 });
