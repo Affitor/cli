@@ -30,11 +30,13 @@ Restart your client and the `affitor` tools will be available to the agent.
 
 | Variable           | Required | Description                                                                 |
 | ------------------ | -------- | --------------------------------------------------------------------------- |
-| `AFFITOR_API_KEY`  | Yes      | Your Affitor **program API key** (Bearer). Server-side only — never ship it to a browser. |
+| `AFFITOR_API_KEY`  | For tracking tools | Your Affitor **program API key** (Bearer). Server-side only — never ship it to a browser. |
 | `AFFITOR_API_URL`  | No       | API base override. Defaults to `https://api.affitor.com`.                    |
 | `AFFITOR_MCP_WRITE` | No      | Set to `1` to register the two tools that move money: `affitor_track_sale` and `affitor_track_refund`. Off by default, so an agent exploring tools cannot create a real sale or reverse a commission. |
+| `AFFITOR_AGENT_KEY` | For coupon tools | An Affitor **agent key** with the `coupons:write` scope. Used only by the coupon tools, never by the tracking tools. Server-side only. |
+| `AFFITOR_MCP_COUPONS` | No    | Set to `1` to add the coupon tools. Needs `AFFITOR_AGENT_KEY`. Off by default. |
 
-If `AFFITOR_API_KEY` is not set, the server prints a clear message to stderr and exits.
+The two tool families are independent: the tracking tools need `AFFITOR_API_KEY`, the coupon tools need `AFFITOR_AGENT_KEY` plus `AFFITOR_MCP_COUPONS=1`, and neither key is ever used in place of the other. If neither family is configured, the server prints a clear message to stderr and exits.
 
 ## Tools
 
@@ -94,6 +96,52 @@ Every tool carries MCP annotations (`readOnlyHint`, `destructiveHint`, `idempote
 - Fires the synthetic verification chain and returns the parsed result. On a rate limit it returns `{ http_status: 429, retry_after_seconds, … }` rather than throwing — back off and retry.
 
 Each tool returns the Affitor API's JSON payload as text content. On a failed request (a thrown error or an `{ ok: false }` envelope) the tool returns an MCP error result with the message.
+
+## Coupon tools
+
+`affitor_create_coupon`, `affitor_lock_coupon` and `affitor_get_coupon` let an agent issue and stop one-time discount codes tied to a partner's referral link. Coupons are not on for every program: Affitor enables them per program, and they need an agent key that a program Owner has granted `coupons:write`. The program comes from that key; no tool takes a program, account, key or permission argument, and unknown fields are refused.
+
+```json
+{
+  "mcpServers": {
+    "affitor": {
+      "command": "npx",
+      "args": ["-y", "@affitor/mcp"],
+      "env": {
+        "AFFITOR_AGENT_KEY": "your_agent_key",
+        "AFFITOR_MCP_COUPONS": "1"
+      }
+    }
+  }
+}
+```
+
+| Tool | Calls | Description |
+| ---- | ----- | ----------- |
+| `affitor_create_coupon` | `POST /api/v1/coupons` | Create a one-time code for one referral link. Marked destructive. |
+| `affitor_lock_coupon` | `POST /api/v1/coupons/:couponId/lock` | Stop new redemptions of one code. It does not delete the coupon, undo applied discounts or refund anyone. Marked destructive. |
+| `affitor_get_coupon` | `GET /api/v1/coupons/:couponId` | Read a coupon's status, version and, once active, its code. Read-only. |
+
+**`affitor_create_coupon`**
+- `partner_program_id: number`, `referral_link_id: number`: positive ids (1 to 10 digits).
+- `product_id: string`: the program's catalogue key, such as `replay`.
+- `discount`: exactly one of `{ "kind": "percent", "percent_off_bps": 1..10000, "duration": "once" }` or `{ "kind": "fixed", "amount_off_minor": <cents>, "currency": "usd", "duration": "once" }`.
+- `prefix?: string`: up to 12 letters or digits; omit for the default.
+- `max_redemptions?: number`: omit for no redemption limit.
+- `expires_at?: string`: future UTC ISO time; omit for no expiry.
+- `idempotency_key: string`: 8 to 128 of `A-Z a-z 0-9 : _ -`.
+
+**`affitor_lock_coupon`**
+- `coupon_id: number`, `expected_version: number`, `idempotency_key: string`.
+
+**`affitor_get_coupon`**
+- `coupon_id: number`.
+
+`idempotency_key` is sent as the `Idempotency-Key` header, never in the body. On a timeout or error, retry with the **same key and the same payload**. HTTP 409 means the link already has an existing or pending coupon, the version is stale, or the key was used with another payload: it is never a reason to try a new key.
+
+A pending or held coupon (HTTP 202, or a `pending`, `held` or `lock_pending` status) comes back as a normal result with `"pending": true`: the code is not active yet, so poll `affitor_get_coupon` instead of creating again. Other API errors come back as an MCP error with only `http_status`, the API's `error_code` and `retry_after_seconds` when given.
+
+For your own server, `registerCouponTools(server, createCouponClient(agentKey, apiUrl))` adds the same tools; `registerTools` is unchanged.
 
 ## License
 

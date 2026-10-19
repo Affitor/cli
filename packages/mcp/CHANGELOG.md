@@ -1,5 +1,13 @@
 # Changelog — @affitor/mcp
 
+## 0.2.4
+- Coupon tools: `affitor_create_coupon`, `affitor_lock_coupon` and `affitor_get_coupon` call `POST /api/v1/coupons`, `POST /api/v1/coupons/:couponId/lock` and `GET /api/v1/coupons/:couponId`. Create and lock take a required `idempotency_key`, sent as the `Idempotency-Key` header; retry with the same key and the same payload. Inputs are strict and carry no program, account, key or permission field.
+- New environment variables: `AFFITOR_AGENT_KEY` (an agent key with `coupons:write`, used only by the coupon tools) and `AFFITOR_MCP_COUPONS=1` (adds the coupon tools; off by default). The coupon tools register only when both are set.
+- `AFFITOR_API_KEY` is now optional: the server starts with only the agent key and `AFFITOR_MCP_COUPONS=1`. The tracking tools still need `AFFITOR_API_KEY`, and `AFFITOR_MCP_WRITE` works as before. Neither key is ever used in place of the other.
+- A pending or held coupon (HTTP 202) comes back as a pending result, not an error and not an active code. Other API errors come back with only the HTTP status, the API's `error.code` and retry info.
+- New export `registerCouponTools(server, couponClient)` (plus `createCouponClient`). `registerTools(server, affitor, runVerification?, options?)` is unchanged.
+- `server.json`: the npm package entry is 0.2.4 and lists the two new variables; `AFFITOR_API_KEY` is no longer required.
+
 ## 0.2.3 (registry 0.2.4)
 - Tool and input descriptions rewritten: each tool says when to use it and what it returns; each input says what it means, where the value comes from, an example and what leaving it out does. No change to tools, schemas or behaviour.
 - A full refund leaves `refundAmountCents` out; sending 0 is refused for newer sales.

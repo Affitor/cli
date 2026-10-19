@@ -14,7 +14,7 @@
     {
       "registryType": "npm",
       "identifier": "@affitor/mcp",
-      "version": "0.2.3",
+      "version": "0.2.4",
       "transport": {
         "type": "stdio"
       },
@@ -22,8 +22,19 @@
         {
           "name": "AFFITOR_API_KEY",
           "description": "Your Affitor program API key. Server-side only.",
-          "isRequired": true,
+          "isRequired": false,
           "isSecret": true
+        },
+        {
+          "name": "AFFITOR_AGENT_KEY",
+          "description": "An Affitor agent key with the coupons:write scope, for the coupon tools. Used only by the coupon tools. Server-side only.",
+          "isRequired": false,
+          "isSecret": true
+        },
+        {
+          "name": "AFFITOR_MCP_COUPONS",
+          "description": "Set to 1 to add the coupon tools (create, lock, get). Needs AFFITOR_AGENT_KEY. Off by default.",
+          "isRequired": false
         },
         {
           "name": "AFFITOR_API_URL",
