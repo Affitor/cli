@@ -219,6 +219,8 @@ npx affitor init \
   --json
 ```
 
+New programs use a 60-day cookie window when `--cookie-duration` is omitted or the interactive default is accepted. An explicit value such as `--cookie-duration 90` is retained. `init` does not modify an already configured project.
+
 ## What Gets Created
 
 Running `npx affitor init` creates:

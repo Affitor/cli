@@ -134,7 +134,7 @@ export async function runInit(
     .replace(/^https?:\/\//, "")
     .replace(/\/$/, "");
 
-  cookieDuration ??= 90;
+  cookieDuration ??= 60;
 
   if (interactive && !flags.autoConfirm) {
     logger.newline();

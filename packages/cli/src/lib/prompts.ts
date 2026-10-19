@@ -64,7 +64,7 @@ export async function promptDurationMonths(): Promise<number> {
 export async function promptCookieDuration(): Promise<number> {
   return input({
     message: "Cookie duration (days):",
-    default: "90",
+    default: "60",
     validate: (v) => {
       const n = parseInt(v, 10);
       if (isNaN(n) || n < 1) return "Enter a positive number";
