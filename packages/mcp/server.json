@@ -4,6 +4,22 @@
   "title": "Affitor",
   "description": "Affiliate programs in AI tools: read partners, commissions and payouts; track clicks and sales.",
   "websiteUrl": "https://affitor.com/docs/api-reference/mcp",
+  "icons": [
+    {
+      "src": "https://affitor.com/favicon.svg",
+      "mimeType": "image/svg+xml",
+      "sizes": [
+        "any"
+      ]
+    },
+    {
+      "src": "https://affitor.com/apple-touch-icon.png",
+      "mimeType": "image/png",
+      "sizes": [
+        "180x180"
+      ]
+    }
+  ],
   "repository": {
     "url": "https://github.com/Affitor/cli",
     "source": "github",

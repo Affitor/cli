@@ -1,6 +1,7 @@
 # Changelog — @affitor/mcp
 
 ## 0.2.3 (registry 0.2.4)
+- The registry entry carries the Affitor icon (`icons`: the SVG mark and the 180 px PNG), so registries and clients show a branded listing.
 - Tool and input descriptions rewritten: each tool says when to use it and what it returns; each input says what it means, where the value comes from, an example and what leaving it out does. No change to tools, schemas or behaviour.
 - A full refund leaves `refundAmountCents` out; sending 0 is refused for newer sales.
 
