@@ -5,10 +5,10 @@ import { join } from "node:path";
 import { CLIENTS, applySetup, callerClient, doctor, planSetup, selectedClients, setupProgramId } from "../lib/agent-setup.js";
 import { readCredentials } from "../lib/config.js";
 import { DEFAULT_API_URL } from "../types.js";
-import { AgentSetupError, ProgramAgentClient, agentApiOrigin, installProgramAgents } from "../lib/program-agent-client.js";
+import { AgentSetupError, ProgramAgentClient, agentApiOrigin, installFromSetupCode, installProgramAgents } from "../lib/program-agent-client.js";
 import { getFlags } from "../lib/flags.js";
 
-interface SetupOptions { client?: string[]; dryRun?: boolean; yes?: boolean; programId?: string }
+interface SetupOptions { client?: string[]; dryRun?: boolean; yes?: boolean; programId?: string; code?: string }
 
 export function registerAgentCommands(program: Command) {
   program.command("agent").description("Configure an AI coding agent for this project")
@@ -16,6 +16,7 @@ export function registerAgentCommands(program: Command) {
     .description("Preview and install project-scoped MCP configuration and an Affitor skill")
     .option("--client <name>", "claude_code, cursor or codex (repeat to select)", (value: string, prior: string[]) => [...prior, value], [])
     .option("--program-id <id>", "Use this program for independent agent credentials (otherwise use the linked project)")
+    .option("--code <code>", "Use the one-time setup code from the dashboard (Setup → Tracking → With AI) instead of signing in")
     .option("--dry-run", "Show the plan without writing files")
     .option("--yes", "Apply the selected client's plan")
     .action(async (opts: SetupOptions, cmd: Command) => {
@@ -29,16 +30,16 @@ export function registerAgentCommands(program: Command) {
             choices: CLIENTS.map(value => ({ value, name: `${value}${existsSync(join(process.cwd(), value === "claude_code" ? ".claude" : value === "cursor" ? ".cursor" : ".agents")) ? " (project directory found)" : ""}`, checked: false })),
           }), process.env);
         }
-        let programId = setupProgramId(process.cwd(), opts.programId);
+        let programId = opts.code ? null : setupProgramId(process.cwd(), opts.programId);
         const origin = agentApiOrigin(flags.apiUrl ?? DEFAULT_API_URL);
-        if (!programId && clients.length && interactive && !opts.dryRun) {
+        if (!programId && !opts.code && clients.length && interactive && !opts.dryRun) {
           const session = readCredentials();
           if (session?.token && Number.isFinite(Date.parse(session.expires_at)) && Date.parse(session.expires_at) > Date.now()) {
             const choices = await new ProgramAgentClient(session.token, origin).programs();
             if (choices.length) programId = await select({ message: "Which program should these agents use?", choices: choices.map(row => ({ value: row.id, name: `${row.name} (${row.id})` })) });
           }
         }
-        const plan = planSetup(process.cwd(), clients, { agentKeys: programId !== null });
+        const plan = planSetup(process.cwd(), clients, { agentKeys: programId !== null || Boolean(opts.code) });
         // Never serialize plan.actions.content: existing configs can contain
         // unrelated credentials that must stay local, including in a dry-run.
         const preview = {
@@ -56,7 +57,11 @@ export function registerAgentCommands(program: Command) {
           approved = await confirm({ message: "Apply this plan? Existing files are backed up first.", default: false });
         }
         if (!opts.dryRun && approved && clients.length) {
-          if (programId !== null) {
+          if (opts.code) {
+            const installed = await installFromSetupCode(plan, opts.code, origin);
+            preview.agent_keys = installed.map(({ client, path, state }) => ({ client, path, state }));
+            status = "needs_next_step";
+          } else if (programId !== null) {
             const session = readCredentials();
             if (!session?.token || !Number.isFinite(Date.parse(session.expires_at)) || Date.parse(session.expires_at) <= Date.now()) status = "needs_login";
             else {
@@ -71,7 +76,7 @@ export function registerAgentCommands(program: Command) {
           : status === "needs_login"
             ? "Run affitor login, then rerun this setup command. No agent key was minted or local files written."
           : status === "needs_confirmation" || status === "planned"
-            ? `Review the plan, then rerun affitor agent setup --client <name>${programId !== null ? ` --program-id ${programId}` : ""} --yes with the same API origin.`
+            ? `Review the plan, then rerun affitor agent setup --client <name>${opts.code ? " --code <code>" : programId !== null ? ` --program-id ${programId}` : ""} --yes with the same API origin.`
             : status === "needs_next_step"
               ? "Installed, not verified. Restart the selected agent and ask it: Call affitor_readiness from Affitor and tell me the result. For Codex, first follow its printed manual configuration instructions."
             : "Local installer only: link a program with affitor init or rerun with --program-id <id> to mint separate agent credentials. Installed is not verified. Configure the program key privately as AFFITOR_API_KEY or in .affitor/.env; restart the selected agent, then ask it to call affitor_readiness. For Codex, first follow the printed manual configuration instructions.";

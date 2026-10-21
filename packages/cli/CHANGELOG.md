@@ -1,5 +1,9 @@
 # Changelog — affitor (CLI)
 
+## Unreleased
+- `affitor agent setup --client <name> --code <code>`: install an agent with the one-time setup code from the dashboard (Setup, Tracking, With AI), no `affitor login` needed. The code works once and for 10 minutes; the key it makes can also write a settings draft.
+- `affitor draft show` and `affitor draft set --name … --website … --type recurring --rate 20 --months 12` (or `--file draft.json`): the agent proposes business details and the commission; nothing changes until an owner or admin applies the draft in the dashboard. Only for programs that are not live yet.
+
 ## 0.4.4
 - `affitor init` writes the program's partner link parameter to `ref_param` (`via` for programs created from now on, `aff` for older ones), from the server's answer. An older server without that field still gives `aff`. The setup notes say which parameter partner links use; the tracker reads both `?aff=` and `?via=`.
 

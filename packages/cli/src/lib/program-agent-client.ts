@@ -83,6 +83,64 @@ export class ProgramAgentClient {
   }
 }
 
+const SETUP_CODE = /^aff_sc_[A-Za-z0-9_-]{43}$/;
+const CODE_ERRORS: Record<string, string> = {
+  code_used: "This code was already used. If that was not you, revoke the new key in Settings → Agents, then create a new code.",
+  code_expired: "This code expired. Create a new one in Setup → Tracking → With AI.",
+  code_cancelled: "This code was cancelled. Create a new one in Setup → Tracking → With AI.",
+  invalid_code: "Unknown setup code. Copy it again from the dashboard.",
+  issuer_changed: "The person who created this code can no longer create agent keys. Ask a program owner for a new code.",
+};
+
+/**
+ * No session: the dashboard's 10-minute, single-use setup code is the credential. Never retried:
+ * a lost answer may already have minted a key (it shows as never used and expires in a day).
+ */
+export async function redeemSetupCode(origin: string, code: string, client: AgentClient): Promise<StoredAgentCredential> {
+  if (!SETUP_CODE.test(code)) throw new AgentSetupError("Expected a setup code (aff_sc_…) copied from the dashboard.");
+  const base = agentApiOrigin(origin);
+  let response: Response;
+  try {
+    response = await fetch(base + "/api/v1/agent-setup-codes/redeem", {
+      method: "POST", redirect: "error", signal: AbortSignal.timeout(15_000),
+      headers: { "Content-Type": "application/json" }, body: JSON.stringify({ code, client, name: client }),
+    });
+  } catch {
+    throw new AgentSetupError("The setup code request did not complete. If it was used, its key shows in Settings → Agents as never used: revoke it, then create a new code.", [], true);
+  }
+  let result: unknown = null;
+  try { result = await response.json(); } catch { /* checked below */ }
+  if (!response.ok) {
+    const reason = object(result) && object(result.error) && typeof result.error.code === "string" ? result.error.code : "";
+    throw new AgentSetupError(CODE_ERRORS[reason] ?? `Setup code request failed (HTTP ${response.status}).`);
+  }
+  const row = object(result) && object(result.data) ? result.data : null;
+  if (!row || !positive(row.id) || !positive(row.program_id) || row.client !== client || typeof row.api_key !== "string" || !/^aff_ag_[A-Za-z0-9_-]{43}$/.test(row.api_key)) {
+    throw new AgentSetupError("Setup code response is invalid. Review never-used keys in Settings → Agents.", row && positive(row.id) ? [row.id] : [], true);
+  }
+  const created = new Date().toISOString();
+  return { version: 1, id: row.id, program_id: row.program_id, client, api_url: base, created_at: created,
+    credential_note: `Setup code; program ${row.program_id}; ${client}; readiness/status/synthetic-test/click/test-only lead/settings draft; created ${created}; not verified. Never commit this file.`,
+    api_key: row.api_key };
+}
+
+/** One client from one setup code. No session, so a failed local write can only be reported, not revoked. */
+export async function installFromSetupCode(plan: SetupPlan, code: string, origin: string, apply: typeof applySetup = applySetup) {
+  if (!plan.agentKeys || plan.clients.length !== 1) throw new AgentSetupError("A setup code installs one agent: pass exactly one --client.");
+  const client = plan.clients[0];
+  const warnings = credentialWarnings(plan.project, `.affitor/agents/${client}.json`);
+  if (warnings.includes("credential_tracked")) throw new AgentSetupError("A private agent credential is tracked by Git. Rotate it and resolve tracking/history before setup.");
+  if (warnings.length) throw new AgentSetupError("Git credential tracking could not be checked. Resolve Git access and retry; the code was not used.");
+  const credential = await redeemSetupCode(origin, code, client);
+  try {
+    stageAgentCredential(plan, client, credential, true);
+    apply(plan);
+  } catch {
+    throw new AgentSetupError(`The key was created but local files could not be written. Revoke key ${credential.id} in Settings → Agents, then create a new code.`, [credential.id]);
+  }
+  return plan.agentKeys.map(({ client, path, id, state }) => ({ client, path, id, state }));
+}
+
 /** Prepare every client before local writes; compensate only keys minted by this run. */
 export async function installProgramAgents(plan: SetupPlan, programId: number, api: ProgramAgentClient, apply: typeof applySetup = applySetup) {
   if (!positive(programId) || !plan.agentKeys || plan.agentKeys.length !== plan.clients.length) throw new AgentSetupError("Generate a fresh agent-key setup plan.");
